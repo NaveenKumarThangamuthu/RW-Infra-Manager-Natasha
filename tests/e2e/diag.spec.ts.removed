@@ -1,0 +1,34 @@
+import { test, expect, type Page } from "@playwright/test";
+
+const USER = process.env.E2E_USER ?? "";
+const PASS = process.env.E2E_PASS ?? "";
+
+async function login(page: Page) {
+  test.skip(!USER || !PASS);
+  await page.goto("/login");
+  await page.locator("input[type='email']").waitFor({ state: "visible", timeout: 15_000 });
+  await page.locator("input[type='email']").fill(USER);
+  await page.locator("input[type='password']").fill(PASS);
+  await page.getByRole("button", { name: /sign in|log in/i }).click();
+  await page.waitForFunction(() => !location.pathname.startsWith("/login"), null, { timeout: 15_000 });
+}
+
+test("diagnostic: capture client-side errors on /", async ({ page }) => {
+  const errors: string[] = [];
+  const logs: string[] = [];
+  page.on("pageerror", (err) => errors.push(`PAGE_ERROR: ${err.message}`));
+  page.on("console", (msg) => {
+    if (msg.type() === "error") logs.push(`CONSOLE_ERROR: ${msg.text()}`);
+  });
+
+  await login(page);
+  await page.goto("/");
+  await page.waitForTimeout(6_000);
+  console.log("=== ERRORS ===");
+  for (const e of errors) console.log(e);
+  for (const l of logs) console.log(l);
+  console.log(`Sidebar count: ${await page.locator(".sidebar").count()}`);
+  console.log(`Nav-link count: ${await page.locator(".sidebar .nav-link").count()}`);
+  console.log(`KPI count: ${await page.locator(".card.kpi").count()}`);
+  console.log(`Topbar count: ${await page.locator(".topbar").count()}`);
+});

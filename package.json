@@ -1,0 +1,51 @@
+{
+  "name": "aws-billing-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Read-only AWS billing dashboard (Next.js + React) with per-resource cost breakdowns for EC2, Lambda, SNS, and region-wise totals.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "postinstall": "prisma generate",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy",
+    "db:seed": "tsx scripts/seed-allowed-users.ts",
+    "set:password": "tsx scripts/set-password.ts",
+    "import:csv": "tsx scripts/import-ec2-csv.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cloudtrail": "^3.1081.0",
+    "@aws-sdk/client-cloudwatch": "^3.1069.0",
+    "@aws-sdk/client-cloudwatch-logs": "^3.1075.0",
+    "@aws-sdk/client-cost-explorer": "^3.658.0",
+    "@aws-sdk/client-ec2": "^3.658.0",
+    "@aws-sdk/client-lambda": "^3.1069.0",
+    "@aws-sdk/client-rds": "^3.1161.0",
+    "@aws-sdk/client-sns": "^3.658.0",
+    "@aws-sdk/client-ssm": "^3.1081.0",
+    "@prisma/client": "^5.22.0",
+    "bcryptjs": "^3.0.3",
+    "lucide-react": "^1.22.0",
+    "mysql2": "^3.24.6",
+    "next": "^14.2.35",
+    "next-auth": "^4.24.14",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "recharts": "^3.9.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "playwright-core": "^1.61.0",
+    "prisma": "^5.22.0",
+    "tsx": "^4.22.4",
+    "typescript": "^5.5.0"
+  }
+}

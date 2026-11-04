@@ -1,0 +1,55 @@
+/**
+ * Next.js instrumentation hook. Runs once per server process at startup.
+ * We inline the hydration logic here (rather than importing @/lib/secrets)
+ * so webpack doesn't have to trace crypto + @prisma/client into the Edge bundle.
+ */
+export async function register() {
+  // Only Node.js runtime — skip on Edge (middleware).
+  if (process.env.NEXT_RUNTIME !== "nodejs") return;
+
+  // Dynamic requires via string variables so webpack leaves them alone.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // Use Module.createRequire so we're calling Node's require, not webpack's.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { createRequire } = (0, eval)("require")("module");
+    const nodeRequire = createRequire(process.cwd() + "/");
+    const crypto: typeof import("crypto") = nodeRequire("crypto");
+    const { PrismaClient } = nodeRequire("@prisma/client");
+
+    const master = process.env.INFRA_KMS_KEY;
+    if (!master) {
+      console.error("[instrumentation] INFRA_KMS_KEY missing — skipping secret hydration");
+      return;
+    }
+    const key = crypto.createHash("sha256").update(master, "utf8").digest();
+
+    const prisma = new PrismaClient();
+    let rows: Array<{ key: string; ciphertext: string; iv: string; authTag: string }> = [];
+    try {
+      rows = await prisma.secret.findMany();
+    } catch (e) {
+      // Table might not exist yet — non-fatal.
+      console.error("[instrumentation] secret_store query failed:", (e as Error).message);
+      await prisma.$disconnect();
+      return;
+    }
+    let loaded = 0, skipped = 0;
+    for (const row of rows) {
+      try {
+        const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(row.iv, "base64"));
+        decipher.setAuthTag(Buffer.from(row.authTag, "base64"));
+        const dec = Buffer.concat([decipher.update(Buffer.from(row.ciphertext, "base64")), decipher.final()]);
+        process.env[row.key] = dec.toString("utf8");
+        loaded++;
+      } catch (e) {
+        console.error("[instrumentation] decrypt failed for", row.key, (e as Error).message);
+        skipped++;
+      }
+    }
+    await prisma.$disconnect();
+    if (loaded > 0) console.log(`[instrumentation] hydrated ${loaded} secret(s) from DB (skipped ${skipped})`);
+  } catch (e) {
+    console.error("[instrumentation] secret hydration failed:", (e as Error).message);
+  }
+}

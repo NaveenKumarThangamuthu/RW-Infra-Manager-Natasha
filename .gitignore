@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Next.js build output — including the dated .next.stale-* / .next.pre-* copies,
+# which contain build manifests with embedded secrets.
+.next/
+.next.*/
+out/
+tsconfig.tsbuildinfo
+
+# Environment and secrets. The bare .env is not enough: timestamped backups
+# (.env.bak-*, .env.pre-secretstore-*) carry the same live credentials,
+# including INFRA_KMS_KEY which decrypts the entire secret store.
+.env
+.env.*
+!.env.example
+
+# Local state and generated artefacts
+*.log
+logs/
+test-results/
+playwright-report/
+.seo-removed-*/
+
+# Editor / OS
+.DS_Store
+next-env.d.ts
+
+# Generated report artefacts — outputs of the scheduled scans and the report
+# generators in scripts/, not source. The Sonar bundle alone is ~176 MB.
+public/sonar-reports/
+public/vulnerability-report.html
+public/vulnerability-report-print.html
+public/vulnerability-report.pdf

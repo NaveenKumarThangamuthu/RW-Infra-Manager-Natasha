@@ -1,0 +1,490 @@
+// Prisma schema for the AWS Billing Dashboard.
+// Datasource: local MySQL 8.4. Set DATABASE_URL in .env / .env.local:
+//   DATABASE_URL="mysql://USER:PASSWORD@localhost:3306/billing"
+//
+// Auth uses JWT sessions (NextAuth), so no Account/Session adapter tables are
+// needed — only the email allowlist (AllowedUser) gates who may sign in.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+/// Application users. Login is email + password; the password is stored only as
+/// a bcrypt hash (never in plaintext). A user may sign in only if active.
+model AllowedUser {
+  id           Int      @id @default(autoincrement())
+  email        String   @unique
+  name         String?
+  /// bcrypt hash of the password. Null until a password has been set.
+  /// Deprecated 2026-07-09 — Google Sign-In is the only supported provider.
+  passwordHash String?
+  active       Boolean  @default(true)
+  /// User's chosen UI theme — "dark" | "light" | "system". Null = use browser default.
+  theme        String?  @db.VarChar(16)
+  /// Accent hue — "indigo"|"violet"|"pink"|"mint"|"cyan"|"amber". Null = indigo default.
+  accent       String?  @db.VarChar(16)
+  /// Background variant — "default"|"pure-black"|"navy"|"warm-white". Null = default.
+  bgVariant    String?  @db.VarChar(16)
+  /// UI density — "comfortable" (default) | "compact". Null = comfortable.
+  density      String?  @db.VarChar(16)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @default(now()) @updatedAt
+
+  @@map("allowed_user")
+}
+
+/// Manual 2.0 / 3.0 / Infra tagging of a server, keyed by IP or AWS resource id.
+/// Replaces the old data/server-allocation.xlsx file; edited via the in-app UI.
+model ServerTag {
+  id           Int      @id @default(autoincrement())
+  /// IPv4 address or AWS RESOURCE_ID used to match cost to this server.
+  matchKey     String   @unique
+  label        String?
+  region       String?
+  instanceType String?
+  /// One of: "2.0", "3.0", "Infra", "Shared", "Not using", "Other".
+  category     String   @default("Other")
+  /// JSON-encoded list of service names running on the server.
+  services     String?  @db.Text
+  updatedAt    DateTime @updatedAt
+  createdAt    DateTime @default(now())
+
+  @@index([category])
+  @@map("server_tag")
+}
+
+/// One-time + ongoing monthly cost aggregates (up to 3 yrs from AWS Cost Explorer).
+model MonthlyCost {
+  id         Int      @id @default(autoincrement())
+  /// "YYYY-MM"
+  month      String
+  /// "SERVICE" or "REGION"
+  dimension  String
+  /// The service name or region code.
+  costKey    String   @db.VarChar(255)
+  amount     Decimal  @db.Decimal(18, 6)
+  unit       String   @default("USD")
+  snapshotAt DateTime @default(now())
+
+  @@unique([month, dimension, costKey], name: "month_dimension_key")
+  @@index([dimension])
+  @@map("monthly_cost")
+}
+
+/// Per-resource cost snapshot taken twice daily (AWS keeps only 14 days of this).
+model ResourceCostSnapshot {
+  id         Int      @id @default(autoincrement())
+  snapshotAt DateTime @default(now())
+  /// "09:00" or "15:00" (IST run label).
+  runLabel   String
+  /// "EC2" | "LAMBDA" | "SNS"
+  service    String
+  resourceId String   @db.VarChar(512)
+  region     String?
+  usageType  String?
+  amount     Decimal  @db.Decimal(18, 6)
+  unit       String   @default("USD")
+  rangeStart String
+  rangeEnd   String
+
+  @@index([snapshotAt])
+  @@index([service, snapshotAt])
+  @@map("resource_cost_snapshot")
+}
+
+/// Cost allocated to each 2.0/3.0/Infra category per snapshot — powers the tag view.
+model TagCostSnapshot {
+  id         Int      @id @default(autoincrement())
+  snapshotAt DateTime @default(now())
+  runLabel   String
+  category   String
+  amount     Decimal  @db.Decimal(18, 6)
+  unit       String   @default("USD")
+
+  @@index([snapshotAt])
+  @@map("tag_cost_snapshot")
+}
+
+/// Per-day, per-resource cost — accumulated from each refresh so per-instance
+/// history grows beyond AWS's 14-day resource-level retention. Upserted by
+/// (service, resourceId, date) so overlapping refreshes never double-count.
+model ResourceDailyCost {
+  id         Int      @id @default(autoincrement())
+  /// "EC2" | "LAMBDA" | "SNS"
+  service    String   @db.VarChar(20)
+  resourceId String   @db.VarChar(255)
+  /// "YYYY-MM-DD"
+  date       String   @db.VarChar(32)
+  amount     Decimal  @db.Decimal(18, 6)
+  unit       String   @default("USD") @db.VarChar(16)
+  updatedAt  DateTime @default(now()) @updatedAt
+
+  @@unique([service, resourceId, date], name: "service_resource_date")
+  @@index([service, date])
+  @@map("resource_daily_cost")
+}
+
+/// Per-instance EC2 cost itemization captured each refresh, so the DB-fallback
+/// EC2 view (when AWS is unreachable) includes Compute + Data Transfer + EBS +
+/// Elastic IP, not just compute.
+model Ec2ItemizedSnapshot {
+  id           Int      @id @default(autoincrement())
+  snapshotAt   DateTime @default(now())
+  runLabel     String?
+  instanceId   String   @db.VarChar(255)
+  compute      Decimal  @db.Decimal(18, 6)
+  dataTransfer Decimal  @db.Decimal(18, 6)
+  ebs          Decimal  @db.Decimal(18, 6)
+  eip          Decimal  @db.Decimal(18, 6)
+
+  @@index([snapshotAt])
+  @@map("ec2_itemized_snapshot")
+}
+
+/// Encrypted-at-rest GitHub OAuth tokens (one per signed-in dashboard user).
+/// AES-256-GCM with the platform KMS key. iv (12B) + authTag (16B) + ciphertext
+/// stored as three separate columns to avoid base64 packaging on read paths.
+/// The plaintext token never lands in the DB.
+model GithubConnection {
+  id          Int       @id @default(autoincrement())
+  /// AllowedUser.email — connections are scoped per dashboard user.
+  userEmail   String    @unique @db.VarChar(255)
+  /// GitHub login resolved at OAuth time (so we can display @user without a token call).
+  githubLogin String?   @db.VarChar(64)
+  /// AES-256-GCM ciphertext of the access token (binary).
+  cipher      Bytes
+  /// 12-byte IV used for the AES-GCM encryption.
+  iv          Bytes
+  /// 16-byte GCM authentication tag.
+  authTag     Bytes
+  /// Space-separated list of scopes the token was granted (e.g. "repo read:user").
+  scopes      String?   @db.VarChar(255)
+  /// Sha-256 of the plaintext token, hex-encoded — used for change detection
+  /// without ever exposing the token. NEVER use this for authentication.
+  tokenHash   String    @db.VarChar(64)
+  /// First 4 chars of plaintext for support / audit ("ghs_a..."). Not secret.
+  tokenPrefix String?   @db.VarChar(8)
+  connectedAt DateTime  @default(now())
+  lastUsedAt  DateTime?
+  revokedAt   DateTime?
+
+  @@index([userEmail])
+  @@map("github_connection")
+}
+
+/// One scan job — captures who triggered, what was scanned, how it ended.
+model ScanJob {
+  id           Int       @id @default(autoincrement())
+  /// "owner/name"
+  repoFullName String    @db.VarChar(255)
+  repoOwner    String    @db.VarChar(64)
+  repoName     String    @db.VarChar(128)
+  /// Branch actually scanned (production / feat/env/prod / default).
+  branch       String    @db.VarChar(128)
+  /// "queued" | "running" | "success" | "failed"
+  status       String    @default("queued") @db.VarChar(16)
+  /// Email of the dashboard user who triggered.
+  triggeredBy  String    @db.VarChar(255)
+  /// "manual" | "webhook" | "scheduled"
+  trigger      String    @default("manual") @db.VarChar(16)
+  startedAt    DateTime  @default(now())
+  finishedAt   DateTime?
+  durationMs   Int?
+  /// SHA of the commit that was scanned (HEAD on the scan branch at clone time).
+  commitSha    String?   @db.VarChar(40)
+  /// Free-form error if status="failed".
+  errorMessage String?   @db.Text
+  /// Per-scanner runtime metadata, JSON-serialized.
+  scannerMeta  String?   @db.Text
+  findings     Finding[]
+
+  @@index([repoFullName, startedAt])
+  @@index([status])
+  @@map("scan_job")
+}
+
+/// One security finding — deduped on fingerprint across scans of the same repo.
+model Finding {
+  id               Int       @id @default(autoincrement())
+  scanJobId        Int
+  scanJob          ScanJob   @relation(fields: [scanJobId], references: [id], onDelete: Cascade)
+  /// "trivy" | "gitleaks" | "depcheck" | "jvm-heap" | "spring-version" | "iac"
+  scanner          String    @db.VarChar(32)
+  /// "CRIT" | "HIGH" | "MED" | "LOW" | "INFO"
+  severity         String    @db.VarChar(8)
+  /// "CVE" | "SECRET" | "IAC" | "SPRING_HYGIENE" | "OTHER"
+  category         String    @db.VarChar(16)
+  /// e.g. "CVE-2024-1234" or "aws-access-key" (gitleaks rule id).
+  ruleId           String    @db.VarChar(128)
+  title            String    @db.VarChar(500)
+  description      String?   @db.Text
+  file             String?   @db.VarChar(500)
+  line             Int?
+  /// SHA-256 of (repo, scanner, ruleId, file, line). Stable across scans → dedupe key.
+  fingerprint      String    @db.VarChar(64)
+  /// Repo + branch the finding is associated with (denorm for query speed).
+  repoFullName     String    @db.VarChar(255)
+  branch           String    @db.VarChar(128)
+  /// Manual suppression — operator marks a finding as "won't fix" with reason.
+  suppressedAt     DateTime?
+  suppressedBy     String?   @db.VarChar(255)
+  suppressedReason String?   @db.Text
+  firstSeenAt      DateTime  @default(now())
+  lastSeenAt       DateTime  @default(now())
+
+  @@unique([repoFullName, fingerprint], name: "repo_fingerprint")
+  @@index([repoFullName, severity])
+  @@index([scanner])
+  @@index([severity, suppressedAt])
+  @@map("finding")
+}
+
+/// Audit trail of backfill and cron refresh runs.
+model RefreshRun {
+  id         Int       @id @default(autoincrement())
+  /// "backfill" | "cron"
+  kind       String
+  runLabel   String?
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  /// "running" | "success" | "error"
+  status     String    @default("running")
+  message    String?   @db.Text
+
+  @@index([startedAt])
+  @@map("refresh_run")
+}
+
+/// Mirror of the GitHub repos the connected user can access. Scanned/queued
+/// from this table — we no longer hit the GitHub API on every page load.
+/// Refreshed by POST /api/security/repos/sync (manual "Sync repos" button).
+model Repo {
+  id            Int       @id @default(autoincrement())
+  /// "owner/name" — case-preserved, unique.
+  fullName      String    @unique @db.VarChar(255)
+  owner         String    @db.VarChar(64)
+  name          String    @db.VarChar(128)
+  /// GitHub's numeric repo id — stable across renames.
+  githubId      BigInt    @unique
+  private       Boolean   @default(false)
+  fork          Boolean   @default(false)
+  archived      Boolean   @default(false)
+  description   String?   @db.Text
+  language      String?   @db.VarChar(64)
+  defaultBranch String    @default("main") @db.VarChar(128)
+  /// Resolved scan branch: production > feat/env/prod > default_branch.
+  scanBranch    String    @default("main") @db.VarChar(128)
+  htmlUrl       String    @db.VarChar(500)
+  stars         Int       @default(0)
+  pushedAt      DateTime?
+  /// HMAC-SHA256 secret for GitHub push webhook. Null until webhook provisioned.
+  webhookSecret String?   @db.VarChar(128)
+  /// GitHub webhook id, so we can update/delete it later.
+  webhookId     BigInt?
+  /// When this row was last refreshed from the GitHub API.
+  lastSyncedAt  DateTime  @default(now())
+  firstSeenAt   DateTime  @default(now())
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([owner])
+  @@index([archived])
+  @@index([pushedAt])
+  @@map("repo")
+}
+
+/// One URL being monitored for SEO / web-perf. Seeded from the historical
+/// Apps Script Google Sheet, editable in-app. Each active target is polled
+/// three times a day (06:00 / 18:00 / 23:00 IST) via GTmetrix + PSI, and each
+/// (device, source) combo lands as its own SeoReport row.
+model SeoTarget {
+  id          Int         @id @default(autoincrement())
+  url         String      @db.VarChar(500)
+  /// Short human label ("Homepage", "Product listing"). Falls back to url.
+  label       String?     @db.VarChar(255)
+  /// "mobile" | "desktop" | "both". "both" fans out to two runs per collector.
+  device      String      @default("both") @db.VarChar(16)
+  runPsi      Boolean     @default(true)
+  runGtmetrix Boolean     @default(true)
+  active      Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  reports     SeoReport[]
+
+  @@unique([url, device], name: "url_device")
+  @@index([active])
+  @@map("seo_target")
+}
+
+/// One SEO / performance measurement — a single (target, source, device) sample.
+/// Written by cron collectors (PSI + GTmetrix, thrice daily) and by the one-time
+/// historical backfill from the Apps Script sheet (source="apps_script").
+/// Core Web Vitals + PageSpeed + GTmetrix metrics live side-by-side so the UI
+/// can compare across sources without a second join.
+model SeoReport {
+  id             Int       @id @default(autoincrement())
+  targetId       Int
+  target         SeoTarget @relation(fields: [targetId], references: [id], onDelete: Cascade)
+  /// "psi" | "gtmetrix" | "apps_script" — provenance of the measurement.
+  source         String    @db.VarChar(16)
+  /// "mobile" | "desktop".
+  device         String    @db.VarChar(16)
+  runAt          DateTime  @default(now())
+  /// "06:00" | "18:00" | "23:00" | "manual" | "backfill".
+  runLabel       String?   @db.VarChar(16)
+  /// "success" | "failed". Failed rows are kept for audit; UI hides by default.
+  status         String    @default("success") @db.VarChar(16)
+  /// 0-100 (PSI) or 0-100 (GTmetrix performance score, if present).
+  perfScore      Decimal?  @db.Decimal(5, 2)
+  /// Lighthouse category scores 0-100 — populated by PSI only, NULL for GTmetrix.
+  accessibilityScore Decimal? @db.Decimal(5, 2)
+  bestPracticesScore Decimal? @db.Decimal(5, 2)
+  seoScore           Decimal? @db.Decimal(5, 2)
+  /// Core Web Vitals + lab metrics — all in ms except CLS (unitless).
+  lcpMs          Int?
+  fcpMs          Int?
+  ttfbMs         Int?
+  tbtMs          Int?
+  cls            Decimal?  @db.Decimal(6, 4)
+  inpMs          Int?
+  speedIndexMs   Int?
+  /// Page-weight metrics (GTmetrix reports these directly; PSI derives from network).
+  totalBytes     BigInt?
+  requests       Int?
+  /// GTmetrix-only: "A".."F" grade + structure score (perfScore holds performance score).
+  gtmetrixGrade  String?   @db.VarChar(4)
+  structureScore Decimal?  @db.Decimal(5, 2)
+  /// Upstream test/report id (GTmetrix report id, PSI has none — leave null).
+  testId         String?   @db.VarChar(128)
+  /// Full upstream payload, for later re-parsing / debugging.
+  raw            String?   @db.LongText
+  errorMessage   String?   @db.Text
+
+  @@index([targetId, runAt])
+  @@index([source, runAt])
+  @@index([runAt])
+  @@map("seo_report")
+}
+
+/// Generic snapshot cache for live external data sources (Prometheus, ELK,
+/// CloudWatch, etc.). Pages read from the latest row per `source`; a manual
+/// "Refresh" button is the only thing that fetches from the upstream source
+/// and writes a new row. Old rows are retained for trend/diff later, but
+/// pages only ever look at the most recent one.
+model DataSnapshot {
+  id           Int      @id @default(autoincrement())
+  /// Stable key — one of: "spring-health", "spring-logs", "ec2-health",
+  /// "cloudwatch-alarms", "prom-alerts".
+  source       String   @db.VarChar(64)
+  /// JSON payload as returned by the live-fetch helper. Schema is per-source.
+  payload      String   @db.LongText
+  /// Where the data was originally fetched from (e.g. "lan", "public" for ELK).
+  via          String?  @db.VarChar(16)
+  /// Email of the user who triggered the refresh.
+  refreshedBy  String?  @db.VarChar(255)
+  /// How long the upstream fetch took (ms).
+  fetchMs      Int?
+  /// "success" | "failed". Failed snapshots are kept for audit but reads ignore them.
+  status       String   @default("success") @db.VarChar(16)
+  errorMessage String?  @db.Text
+  capturedAt   DateTime @default(now())
+
+  @@index([source, capturedAt])
+  @@index([capturedAt])
+  @@map("data_snapshot")
+}
+
+/// One AS2 EDI certificate discovered in the Drive folder tree.
+/// Written by lib/certificates.ts (daily cron + manual refresh). Uniqueness
+/// is per (distributor, filename); a re-parse updates the same row so we
+/// carry alertedAt forward and only alert once per crossing.
+model CertificateCheck {
+  id                 Int      @id @default(autoincrement())
+  /// Distributor folder name in Drive (e.g. "GFS-US-2025", "chefswarehouse").
+  distributor        String   @db.VarChar(128)
+  /// File name in Drive (e.g. "RW_GFS_AS2.cer", "scmGFSAS2.cer").
+  filename           String   @db.VarChar(255)
+  /// Google Drive file id — for building an "Open in Drive" link.
+  driveFileId        String   @db.VarChar(64)
+  /// Timestamp Drive last saw the file modified — helps detect swaps.
+  driveModifiedTime  DateTime?
+  /// "RW" when RW owns the cert (subject O=Restaurantware), else "PARTNER".
+  owner              String   @db.VarChar(16)
+  /// Full distinguished-name subject line from openssl.
+  subject            String   @db.Text
+  /// Full distinguished-name issuer line from openssl.
+  issuer             String   @db.Text
+  notBefore          DateTime
+  notAfter           DateTime
+  /// SHA-256 fingerprint (hex, lowercase, no colons).
+  fingerprintSha256  String   @db.VarChar(64)
+  /// When the last successful parse happened.
+  parsedAt           DateTime @default(now())
+  /// "success" | "parse_failed" — parse_failed rows keep the error message for diagnosis.
+  status             String   @default("success") @db.VarChar(16)
+  errorMessage       String?  @db.Text
+  /// notAfter value we last alerted on. Null = never alerted. If the cert is
+  /// swapped and its new notAfter is farther out, this resets and we can alert again.
+  alertedAt          DateTime?
+
+  @@unique([distributor, filename], name: "distributor_filename")
+  @@index([notAfter])
+  @@index([distributor])
+  @@map("certificate_check")
+}
+
+/// One row per (repo, branch, day) — captures the Sonar numbers we
+/// collected during a refresh. Used to compute day-over-day trend arrows
+/// on the /sonar page. Rows are additive; older rows kept for trend history.
+model SonarScanSnapshot {
+  id            Int      @id @default(autoincrement())
+  repo          String   @db.VarChar(128)
+  branch        String   @db.VarChar(64)
+  sonarProject  String?  @db.VarChar(128)
+  capturedAt    DateTime @default(now())
+  bugs          Int      @default(0)
+  vulns         Int      @default(0)
+  hotspots      Int      @default(0)
+  smells        Int      @default(0)
+  blockers      Int      @default(0)
+  criticals     Int      @default(0)
+  ncloc         Int      @default(0)
+  coverage      Float?
+  gate          String?  @db.VarChar(16)
+  healthKey     String?  @db.VarChar(16)
+
+  @@index([repo, branch, capturedAt])
+  @@index([capturedAt])
+  @@map("sonar_scan_snapshot")
+}
+
+/// Envelope-encrypted app secrets. Bootstrap creds (MYSQL_*, DATABASE_URL,
+/// INFRA_KMS_KEY, NEXTAUTH_SECRET, NEXTAUTH_URL) still live in .env — everything
+/// else is stored here as AES-256-GCM ciphertext with INFRA_KMS_KEY as the master.
+///
+/// Never SELECT ciphertext in logs. Only /api/settings/secrets on POST reads it,
+/// and it's decrypted in-memory to hydrate process.env.
+model Secret {
+  id          Int      @id @default(autoincrement())
+  /// The env var name (SONAR_TOKEN, GDRIVE_REFRESH_TOKEN, etc.). Case-sensitive.
+  key         String   @unique @db.VarChar(64)
+  /// Base64-encoded AES-256-GCM ciphertext.
+  ciphertext  String   @db.Text
+  /// Base64-encoded 96-bit init vector (unique per encryption).
+  iv          String   @db.VarChar(32)
+  /// Base64-encoded 128-bit auth tag from AES-GCM.
+  authTag     String   @db.VarChar(32)
+  /// Free-form label for the operator (e.g. "SonarQube API token · rotated 2026-07-10").
+  description String?  @db.VarChar(255)
+  /// Timestamp of the last rotation.
+  updatedAt   DateTime @default(now()) @updatedAt
+  /// Email of the user who last rotated it (from the NextAuth session), else "system".
+  updatedBy   String   @default("system") @db.VarChar(128)
+
+  @@map("secret_store")
+}
