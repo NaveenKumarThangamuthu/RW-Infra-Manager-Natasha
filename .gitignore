@@ -32,3 +32,6 @@ public/sonar-reports/
 public/vulnerability-report.html
 public/vulnerability-report-print.html
 public/vulnerability-report.pdf
+
+# Claude Code worktrees
+.claude/worktrees/

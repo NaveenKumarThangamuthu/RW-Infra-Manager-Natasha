@@ -148,7 +148,7 @@ export default function CronJobs() {
           <Step tone={isStale(data.repos.lastSyncedAt) ? "none" : "ok"} name="GitHub repo sync" detail={`${num(data.repos.count)} repos · synced ${ago(data.repos.lastSyncedAt)}`} />
           <Step tone={anomalies ? "ok" : "none"} name="Cost anomaly scan" detail={anomalies ? `MAD z ≥ 2.5 · ${anomalies.anomalies.length} anomalies` : "—"} />
           <Step tone={summary ? "ok" : "none"} name="CRIT / HIGH findings" detail={summary ? `${num(crit)} CRIT · ${num(summary.github.findings.HIGH)} HIGH open` : "—"} />
-          <Step tone="none" name="Telegram cron summary" detail="Sent by each cron run when configured" />
+          <Step tone="none" name="Telegram cron summary" detail="When configured" />
           <div className="h-2.5" />
         </Card>
         <Card className="overflow-hidden">
