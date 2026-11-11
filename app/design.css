@@ -1,0 +1,69 @@
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Design tokens from the "Natasha Redesign" Claude Design project.
+ * html:root beats the legacy :root block in globals.css; the legacy variable
+ * names are aliased to these tokens so screens still using globals.css classes
+ * inherit the same palette.
+ */
+html:root {
+  --bg: #09090b; --shell: #0e0e10; --card: #111113; --card-2: #1a1a1d; --tab: #2a2a2e; --popover: #141416;
+  --fg: #fafafa; --fg-2: #d4d4d8; --muted-fg: #a1a1aa; --subtle-fg: #71717a;
+  --border: rgba(255,255,255,.08); --border-strong: rgba(255,255,255,.16); --input: rgba(255,255,255,.12);
+  --hover: rgba(255,255,255,.045); --active: rgba(255,255,255,.08);
+  --primary: #fafafa; --primary-fg: #18181b; --brand: #8b5cf6;
+  --success: #4ade80; --warning: #fbbf24; --orange: #fb923c; --danger: #f87171; --info: #60a5fa;
+  --grid: rgba(255,255,255,.06); --shadow: 0 1px 2px rgba(0,0,0,.3); --overlay: rgba(0,0,0,.55);
+  --c20: #38bdf8; --c30: #a78bfa; --cinfra: #fbbf24; --cdev: #f472b6; --cshared: #34d399; --cunused: #71717a; --cother: #a1a1aa;
+
+  --bg-glow: none;
+  --panel: var(--card); --panel-2: var(--card-2); --text: var(--fg);
+  --muted: var(--muted-fg); --muted-soft: var(--subtle-fg);
+  --accent: var(--brand); --accent-2: var(--brand); --accent-3: var(--success);
+  --accent-grad: var(--brand); --accent-glow: color-mix(in oklab, var(--brand) 22%, transparent);
+  --bar: var(--brand); --shadow-card: var(--shadow); --shadow-elev: 0 8px 24px rgba(0,0,0,.18);
+}
+html[data-theme="light"] {
+  --bg: #ffffff; --shell: #f4f4f5; --card: #ffffff; --card-2: #f4f4f5; --tab: #ffffff; --popover: #ffffff;
+  --fg: #09090b; --fg-2: #3f3f46; --muted-fg: #71717a; --subtle-fg: #a1a1aa;
+  --border: #e4e4e7; --border-strong: #d4d4d8; --input: #e4e4e7; --hover: #f4f4f5; --active: #ebebed;
+  --primary: #18181b; --primary-fg: #fafafa;
+  --success: #16a34a; --warning: #d97706; --orange: #ea580c; --danger: #dc2626; --info: #2563eb;
+  --grid: #efeff1; --shadow: 0 1px 2px rgba(16,24,40,.05); --overlay: rgba(9,9,11,.3);
+  --c20: #0ea5e9; --c30: #8b5cf6; --cinfra: #f59e0b; --cdev: #ec4899; --cshared: #10b981; --cunused: #a1a1aa; --cother: #d4d4d8;
+  --bg-glow: none;
+}
+html[data-theme="dark"][data-bg="pure-black"] { --bg: #000000; --shell: #000000; --card: #0a0a0a; --card-2: #161616; --popover: #0d0d0d; }
+html[data-theme="dark"][data-bg="navy"] { --bg: #0b1222; --shell: #0d1428; --card: #111a33; --card-2: #1a2442; --popover: #131c36; }
+
+html[data-accent="indigo"] { --brand: #6366f1; }
+html[data-accent="violet"] { --brand: #8b5cf6; }
+html[data-accent="pink"] { --brand: #ec4899; }
+html[data-accent="mint"] { --brand: #10b981; }
+html[data-accent="cyan"] { --brand: #06b6d4; }
+html[data-accent="amber"] { --brand: #f59e0b; }
+
+* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+html, body {
+  margin: 0; height: 100%; background: var(--shell); background-image: none; color: var(--fg);
+  font-family: var(--font-geist-sans), Geist, ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-size: 14px; -webkit-font-smoothing: antialiased;
+}
+input::placeholder { color: var(--muted-fg); }
+::selection { background: color-mix(in oklab, var(--brand) 32%, transparent); }
+
+@layer utilities {
+  .scrollbar-none { scrollbar-width: none; }
+  .tnum { font-variant-numeric: tabular-nums; }
+  .text-wrap-pretty { text-wrap: pretty; }
+}
+
+/* Links inside redesigned screens keep the design's foreground + brand hover. */
+:where(.nt-screen a) { color: var(--fg); text-decoration: none; }
+:where(.nt-screen a:hover) { color: var(--brand); }
+
+/* Screens with no design yet keep their globals.css layout on the new surfaces. */
+.login-shell { background: var(--shell); background-image: none; }
+.login-card { background: var(--card); border-color: var(--border); box-shadow: var(--shadow); }
+.brand-name { background: none; -webkit-text-fill-color: currentColor; color: var(--fg); }

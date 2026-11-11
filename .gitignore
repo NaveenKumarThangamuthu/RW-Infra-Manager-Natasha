@@ -17,7 +17,7 @@ tsconfig.tsbuildinfo
 
 # Local state and generated artefacts
 *.log
-logs/
+/logs/
 test-results/
 playwright-report/
 .seo-removed-*/

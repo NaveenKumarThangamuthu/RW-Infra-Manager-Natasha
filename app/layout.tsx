@@ -1,5 +1,9 @@
 import type { Metadata } from "next";
+import { GeistSans } from "geist/font/sans";
+import { GeistMono } from "geist/font/mono";
+import "./tailwind-base.css";
 import "./globals.css";
+import "./design.css";
 import Providers from "@/components/Providers";
 import Shell from "@/components/Shell";
 
@@ -16,7 +20,7 @@ const THEME_INIT = `
   var t=(p==="system"?(window.matchMedia("(prefers-color-scheme: light)").matches?"light":"dark"):p);
   d.setAttribute("data-theme",t); d.style.colorScheme=t;
   var a=localStorage.getItem("natasha-accent");
-  if(a&&a!=="indigo") d.setAttribute("data-accent",a);
+  if(a) d.setAttribute("data-accent",a);
   var b=localStorage.getItem("natasha-bg");
   if(b&&b!=="default") d.setAttribute("data-bg",b);
   var dn=localStorage.getItem("natasha-density");
@@ -26,7 +30,7 @@ const THEME_INIT = `
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" data-theme="dark">
+    <html lang="en" data-theme="dark" className={`${GeistSans.variable} ${GeistMono.variable}`}>
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT }} />
       </head>
