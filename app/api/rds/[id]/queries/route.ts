@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { getRdsQueryInsights } from "@/lib/rdsQueryInsights";
+import { getRdsQueryInsights, isQueryOrder } from "@/lib/rdsQueryInsights";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 45;
@@ -15,8 +15,13 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     return NextResponse.json({ error: "A valid ?region= is required" }, { status: 400 });
   }
 
+  const sort = req.nextUrl.searchParams.get("sort");
+  if (sort != null && !isQueryOrder(sort)) {
+    return NextResponse.json({ error: "?sort= must be rows, time or latency" }, { status: 400 });
+  }
+
   try {
-    const insights = await getRdsQueryInsights(region, params.id);
+    const insights = await getRdsQueryInsights(region, params.id, sort ?? "rows");
     return NextResponse.json({ ok: true, insights });
   } catch (e) {
     return NextResponse.json(

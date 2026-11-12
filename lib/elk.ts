@@ -49,13 +49,17 @@ export interface EsResult<T = unknown> {
   via: "override" | "lan" | "public";
 }
 
-export async function esSearch<T = unknown>(index: string, body: unknown): Promise<EsResult<T>> {
+export async function esSearch<T = unknown>(
+  index: string,
+  body: unknown,
+  opts?: { timeoutMs?: number },
+): Promise<EsResult<T>> {
   const path = `/${encodeURIComponent(index)}/_search`;
   if (OVERRIDE) {
     return { data: (await tryFetch(OVERRIDE, path, body, TIMEOUT_PUBLIC_MS)) as T, via: "override" };
   }
   try {
-    return { data: (await tryFetch(LAN, path, body, TIMEOUT_LAN_MS)) as T, via: "lan" };
+    return { data: (await tryFetch(LAN, path, body, opts?.timeoutMs ?? TIMEOUT_LAN_MS)) as T, via: "lan" };
   } catch (lanErr) {
     try {
       return { data: (await tryFetch(PUBLIC, path, body, TIMEOUT_PUBLIC_MS)) as T, via: "public" };
@@ -65,4 +69,19 @@ export async function esSearch<T = unknown>(index: string, body: unknown): Promi
       );
     }
   }
+}
+
+// Elasticsearch sheds load with 429s, circuit-breaker errors and timeouts when its
+// heap is full. These usually clear within seconds, so retry before recording a failure.
+export async function withRetry<T>(fn: () => Promise<T>, attempts = 3, delayMs = 3_000): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw lastErr;
 }

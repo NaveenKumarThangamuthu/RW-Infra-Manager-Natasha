@@ -7,6 +7,9 @@
  *   FROM performance_schema.events_statements_summary_by_digest
  *   ORDER BY sum_rows_examined DESC LIMIT 15;
  *
+ * The order can also be total time or average latency (`orderBy`), mapped
+ * through a fixed column table so no caller input reaches the SQL text.
+ *
  * rows_examined is the useful signal CloudWatch cannot give you: a statement
  * that examines millions of rows to return a handful is doing a scan, and that
  * is an index problem rather than a sizing problem.
@@ -62,6 +65,17 @@ export interface RdsQueryInsights {
   /** performance_schema must be ON for any of this to mean anything. */
   performanceSchemaEnabled?: boolean;
 }
+
+export type QueryOrder = "rows" | "time" | "latency";
+
+const ORDER_COLUMN: Record<QueryOrder, string> = {
+  rows: "sum_rows_examined",
+  time: "sum_timer_wait",
+  latency: "avg_timer_wait",
+};
+
+export const isQueryOrder = (v: string | null): v is QueryOrder =>
+  v != null && Object.prototype.hasOwnProperty.call(ORDER_COLUMN, v);
 
 function credKey(instanceId: string): { user?: string; pass?: string } {
   const slug = instanceId.toUpperCase().replace(/[^A-Z0-9]/g, "_");
@@ -140,6 +154,7 @@ function buildIssues(queries: TopQuery[]): QueryIssue[] {
 export async function getRdsQueryInsights(
   region: string,
   instanceId: string,
+  orderBy: QueryOrder = "rows",
 ): Promise<RdsQueryInsights> {
   const base = {
     fetchedAt: new Date().toISOString(),
@@ -210,7 +225,7 @@ export async function getRdsQueryInsights(
               sum_no_index_used
          FROM performance_schema.events_statements_summary_by_digest
         WHERE digest_text IS NOT NULL
-        ORDER BY sum_rows_examined DESC
+        ORDER BY ${ORDER_COLUMN[orderBy]} DESC
         LIMIT 15`,
     );
 

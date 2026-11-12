@@ -5,7 +5,7 @@
 import { getSpringServicesHealth, alerts as promAlerts } from "@/lib/prometheus";
 import { listAllInstancesHealth, listAllVolumes } from "@/lib/ec2Health";
 import { listOpenAlarms } from "@/lib/cloudwatchAlarms";
-import { esSearch, SPRING_LOG_INDEX } from "@/lib/elk";
+import { esSearch, SPRING_LOG_INDEX, withRetry } from "@/lib/elk";
 import { analyzeAllInstances } from "@/lib/recommendations";
 import { listOhioLambdas } from "@/lib/lambdaOhio";
 
@@ -15,21 +15,6 @@ async function timed<T>(fn: () => Promise<{ payload: T; via?: string | null }>):
   const t0 = Date.now();
   const { payload, via } = await fn();
   return { payload, via: via ?? null, fetchMs: Date.now() - t0 };
-}
-
-// Elasticsearch sheds load with 429s, circuit-breaker errors and timeouts when its
-// heap is full. These usually clear within seconds, so retry before recording a failure.
-async function withRetry<T>(fn: () => Promise<T>, attempts = 3, delayMs = 3_000): Promise<T> {
-  let lastErr: unknown;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastErr = err;
-      if (i < attempts - 1) await new Promise((r) => setTimeout(r, delayMs));
-    }
-  }
-  throw lastErr;
 }
 
 export function fetchSpringHealth() {
