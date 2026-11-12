@@ -27,11 +27,12 @@ const SOURCE_LABEL: Record<string, string> = {
   "cloudwatch-alarms": "CloudWatch alarms", "prom-alerts": "Prometheus alerts", recommendations: "Recommendations", "lambda-ohio": "Lambda · Ohio",
 };
 const FRESH_LABEL: Record<string, string> = { "ec2-health": "EC2", "ec2-volumes": "Volumes", "cloudwatch-alarms": "CloudWatch", "prom-alerts": "Prometheus", "lambda-ohio": "Lambda" };
-const CRON_SCHEDULE = [{ h: 0, m: 30, ist: "06:00 IST", utc: "00:30 UTC" }, { h: 12, m: 30, ist: "18:00 IST", utc: "12:30 UTC" }];
+// The host crontab runs in host local time (IST), so the UTC hours below are 00:30 and 12:30 IST.
+const CRON_SCHEDULE = [{ h: 7, m: 0, ist: "12:30 IST", utc: "07:00 UTC" }, { h: 19, m: 0, ist: "00:30 IST", utc: "19:00 UTC" }];
 const JOB_COLS = "minmax(220px,1.4fr) 130px minmax(180px,1fr) 90px 170px 70px 76px";
 const HIST_COLS = "150px 110px minmax(160px,1fr) 90px 110px";
 const HEAD = "grid h-[38px] items-center gap-3.5 border-0 border-y border-solid border-border bg-card-2 px-5 text-[12px] font-medium text-muted-foreground";
-const CRONTAB = `# Natasha refresh · twice daily (UTC)
+const CRONTAB = `# Natasha refresh · twice daily, host local time (IST)
 30 0 * * * scripts/cron-refresh.sh "0030-utc-06ist"
 30 12 * * * scripts/cron-refresh.sh "1230-utc-18ist"
 
@@ -86,7 +87,7 @@ export default function CronJobs() {
   const runNow = () => void refresh();
   const header = (
     <PageHeader title="Cron jobs"
-      description={<>Scheduled refreshes that keep every snapshot current. The host crontab runs <span className="font-mono text-[13px] text-fg-2">scripts/cron-refresh.sh</span> twice daily at 00:30 and 12:30 UTC (06:00 and 18:00 IST).</>}
+      description={<>Scheduled refreshes that keep every snapshot current. The host crontab runs <span className="font-mono text-[13px] text-fg-2">scripts/cron-refresh.sh</span> twice daily at 00:30 and 12:30 IST (19:00 and 07:00 UTC).</>}
       actions={<>
         <Button size="lg" onClick={() => setShowCrontab((v) => !v)}><Terminal size={14} className="block" />{showCrontab ? "Hide crontab" : "View crontab"}</Button>
         <Button variant="primary" size="lg" className={cn("px-3.5", refreshing && "opacity-70")} disabled={refreshing} onClick={runNow}>
@@ -187,7 +188,7 @@ export default function CronJobs() {
           <div className="min-w-[980px]">
             <div className={HEAD} style={{ gridTemplateColumns: JOB_COLS }}><span>Job</span><span>Schedule</span><span>Cadence</span><span>Last run</span><span>Result</span><span className="text-right">Duration</span><span /></div>
             {[
-              { name: "Ops refresh", ep: "POST /api/cron/refresh-all", cron: "30 0,12 * * *", cadence: "Twice daily · 06:00 & 18:00 IST", last: latest?.startedAt, status: allOk ? "Success" : "Partial", note: `${healthy.length} of ${sources.length} snapshots`, dur: seconds(latest?.durationMs), bad: !allOk, run: runNow },
+              { name: "Ops refresh", ep: "POST /api/cron/refresh-all", cron: "30 0,12 * * *", cadence: "Twice daily · 00:30 & 12:30 IST", last: latest?.startedAt, status: allOk ? "Success" : "Partial", note: `${healthy.length} of ${sources.length} snapshots`, dur: seconds(latest?.durationMs), bad: !allOk, run: runNow },
               { name: "Billing refresh", ep: "POST /api/refresh?label=…", cron: "30 0,12 * * *", cadence: "Chained after ops refresh", last: data.lastBilling?.startedAt, status: data.lastBilling?.status === "error" ? "Failed" : "Success", note: "Cost Explorer snapshot", dur: between(data.lastBilling?.startedAt, data.lastBilling?.finishedAt), bad: data.lastBilling?.status === "error" },
               { name: "Certificate scan", ep: "POST /api/certificates/refresh", cron: "30 0,12 * * *", cadence: "Twice daily", last: data.lastCertificateCheck, status: "Success", note: "AS2 certificates checked", dur: "—" },
               { name: "Billing backfill", ep: "POST /api/backfill", cron: "manual", cadence: "One-time · 3-year monthly backfill", last: data.lastBackfill?.startedAt, status: data.lastBackfill ? "Completed" : "Not run", note: "Idempotent · ?force=1 re-runs", dur: between(data.lastBackfill?.startedAt, data.lastBackfill?.finishedAt) },

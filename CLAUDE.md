@@ -31,7 +31,7 @@ npx playwright test tests/e2e/dashboard.spec.ts -g "login redirect"   # Single t
 The production instance is the systemd user unit `natasha-dashboard.service`. It runs `scripts/run-natasha-fg.sh`, which does `next start` on port 3000 from this checkout, and it is reachable through a Cloudflare tunnel.
 
 - `next build` and `next dev` both write to the `.next/` directory the live server uses, so running either here can disrupt production. A build only takes full effect after `systemctl --user restart natasha-dashboard.service`. Confirm with the user before building or restarting.
-- The host crontab calls `scripts/cron-refresh.sh` at 00:30 and 12:30 UTC. It hits `localhost:3000`, and `scripts/refresh-sonar-report.sh` has its own schedule. Those scripts hardcode this repo's absolute path.
+- The host crontab calls `scripts/cron-refresh.sh` at 00:30 and 12:30 host time, which is IST (the `0030-utc-06ist` / `1230-utc-18ist` labels it passes are misnomers). It hits `localhost:3000`, and `scripts/refresh-sonar-report.sh` has its own schedule. Those scripts hardcode this repo's absolute path.
 
 ## Architecture
 

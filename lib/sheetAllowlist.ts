@@ -111,7 +111,8 @@ export async function getRepoAllowlist(): Promise<AllowlistResult> {
   const now = Date.now();
   if (cache && now - cache.fetchedAt < TTL_MS) {
     return {
-      repos: cache.repos,
+      // A cached failure must degrade open too, not filter everything out.
+      repos: cache.error ? null : cache.repos,
       count: cache.sourceCount,
       source: `Sheet:Summary (cached · ${Math.round((now - cache.fetchedAt) / 1000)}s old)`,
       fetchedAt: new Date(cache.fetchedAt).toISOString(),
@@ -133,7 +134,9 @@ export async function getRepoAllowlist(): Promise<AllowlistResult> {
     const csv = await r.text();
     const repos = extractRepos(csv);
     const uniq = new Set(repos);
-    cache = { fetchedAt: now, repos: uniq, sourceCount: uniq.size, error: null };
+    // An empty result means the tab changed shape, not that every repo is excluded.
+    if (uniq.size === 0) throw new Error(`no GitHub URLs found in the "${TAB_NAME}" tab — is the "Github Url" column missing?`);
+    cache ={ fetchedAt: now, repos: uniq, sourceCount: uniq.size, error: null };
     return {
       repos: uniq,
       count: uniq.size,

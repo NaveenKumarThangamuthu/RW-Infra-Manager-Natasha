@@ -17,6 +17,21 @@ async function timed<T>(fn: () => Promise<{ payload: T; via?: string | null }>):
   return { payload, via: via ?? null, fetchMs: Date.now() - t0 };
 }
 
+// Elasticsearch sheds load with 429s, circuit-breaker errors and timeouts when its
+// heap is full. These usually clear within seconds, so retry before recording a failure.
+async function withRetry<T>(fn: () => Promise<T>, attempts = 3, delayMs = 3_000): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw lastErr;
+}
+
 export function fetchSpringHealth() {
   return timed(async () => ({ payload: { services: await getSpringServicesHealth() } }));
 }
@@ -78,7 +93,7 @@ export function fetchSpringLogs() {
         },
       },
     };
-    const { data, via } = await esSearch<{
+    const { data, via } = await withRetry(() => esSearch<{
       aggregations: { services: { buckets: Array<{
         key: string; doc_count: number;
         errors: { doc_count: number };
@@ -86,7 +101,7 @@ export function fetchSpringLogs() {
         hosts: { buckets: Array<{ key: string }> };
         latest_error: { h: { hits: { hits: Array<{ _source: { "@timestamp"?: string; message?: string } }> } } };
       }> } };
-    }>(SPRING_LOG_INDEX + "*", body);
+    }>(SPRING_LOG_INDEX + "*", body));
 
     const services = data.aggregations.services.buckets.map((b) => {
       const lh = b.latest_error.h.hits.hits[0];
