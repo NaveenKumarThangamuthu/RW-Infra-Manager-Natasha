@@ -40,7 +40,7 @@ test.describe("Natasha design-v2 UI", () => {
     // Verify each expected label as substring — labels can render inside <span> children.
     const expected = [
       "Home", "Daily Brief", "Billing", "Servers", "Lambda", "SNS",
-      "Data Transfer", "Regions", "Categories", "Spring", "SEO / Web-Perf",
+      "Data Transfer", "Regions", "Categories", "Spring",
       "Incidents", "Recommendations", "Repositories",
       "Settings", "Integrations",
     ];

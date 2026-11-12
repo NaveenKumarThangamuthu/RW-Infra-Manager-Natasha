@@ -1,7 +1,7 @@
 "use client";
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { Gauge, Lightbulb, ShieldCheck, Sparkle, Sprout, type LucideIcon } from "lucide-react";
+import { Lightbulb, ShieldCheck, Sparkle, Sprout, type LucideIcon } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/card";
 import { ago, compact, isStale, num } from "@/components/natasha/format";
 import type { DashboardSummary } from "@/components/shell/useOps";
@@ -16,8 +16,8 @@ function Stat({ label, value, color }: { label: string; value: ReactNode; color?
   );
 }
 
-function Tile({ href, icon: Icon, title, tag, dot, big, bigColor, unit, wide, footLeft, footRight, footRightColor, children }: {
-  href?: string; icon: LucideIcon; title: string; tag?: string; dot: string; big: ReactNode; bigColor?: string; unit: ReactNode; wide?: boolean;
+function Tile({ href, icon: Icon, title, tag, dot, big, bigColor, unit, footLeft, footRight, footRightColor, children }: {
+  href?: string; icon: LucideIcon; title: string; tag?: string; dot: string; big: ReactNode; bigColor?: string; unit: ReactNode;
   footLeft: string; footRight: string; footRightColor?: string; children: ReactNode;
 }) {
   const body = (
@@ -38,10 +38,9 @@ function Tile({ href, icon: Icon, title, tag, dot, big, bigColor, unit, wide, fo
     </>
   );
   const cls = cn("flex min-w-0 flex-col gap-3.5 px-5 py-[18px] shadow-[1px_0_0_var(--border),0_1px_0_var(--border)]", href && "cursor-pointer hover:bg-hover");
-  const span = { gridColumn: `span var(${wide ? "--h5b" : "--h5a"},1)` };
   return href
-    ? <Link href={href} className={cn(cls, "no-underline")} style={span}>{body}</Link>
-    : <div className={cls} style={span}>{body}</div>;
+    ? <Link href={href} className={cn(cls, "no-underline")}>{body}</Link>
+    : <div className={cls}>{body}</div>;
 }
 
 const STAT_GRID = "grid grid-cols-2 gap-x-3 gap-y-2.5";
@@ -49,15 +48,13 @@ const STAT_GRID = "grid grid-cols-2 gap-x-3 gap-y-2.5";
 export function HealthPanel({ s }: { s: DashboardSummary }) {
   const f = s.github.findings;
   const sp = s.spring;
-  const perf = s.seo.worstMobilePerf?.perfScore ?? null;
-  const perfColor = perf == null ? "var(--muted-fg)" : perf < 50 ? "var(--danger)" : perf < 90 ? "var(--warning)" : "var(--success)";
   const stale = (iso: string | null) => (isStale(iso) ? "var(--warning)" : undefined);
   const snapRel = (iso: string | null) => `Snap ${ago(iso)}`;
   const zeroGood = (n: number) => (n > 0 ? "var(--danger)" : "var(--success)");
   return (
     <Card className="overflow-hidden">
-      <CardHeader title="Platform health" description="Security, services, functions and web performance" className="py-[18px]" />
-      <div className="grid overflow-hidden border-0 border-t border-solid border-border grid-cols-[repeat(var(--h5c,5),minmax(0,1fr))]">
+      <CardHeader title="Platform health" description="Security, services, functions and recommendations" className="py-[18px]" />
+      <div className="grid overflow-hidden border-0 border-t border-solid border-border grid-cols-[repeat(var(--h4c,4),minmax(0,1fr))]">
         <Tile href="/security" icon={ShieldCheck} title="GitHub Security" dot={f.CRIT > 0 ? "var(--danger)" : f.HIGH > 0 ? "var(--warning)" : "var(--success)"}
           big={num(s.github.activeRepos)} unit="active repos" footLeft={`${s.github.scans.last24h} scans (24h)`} footRight={`Synced ${ago(s.github.lastSyncAt)}`}>
           <div className={STAT_GRID}>
@@ -83,15 +80,7 @@ export function HealthPanel({ s }: { s: DashboardSummary }) {
             <Stat label="Errors 24h" value={num(s.lambda.errors24h)} color={s.lambda.errors24h > 0 ? "var(--danger)" : undefined} />
           </div>
         </Tile>
-        <Tile wide icon={Gauge} title="SEO / Web-Perf" dot={perfColor} big={perf ?? "—"} bigColor={perfColor}
-          unit={s.seo.worstMobilePerf ? `worst mobile perf · ${s.seo.worstMobilePerf.label}` : "no reports"}
-          footLeft="PSI + GTmetrix" footRight={s.seo.lastLiveAt ? `Last ${ago(s.seo.lastLiveAt)}` : "No runs"} footRightColor={stale(s.seo.lastLiveAt)}>
-          <div className="grid grid-cols-2 gap-2">
-            <Stat label="URLs" value={num(s.seo.targets)} />
-            <Stat label="Runs 24h" value={num(s.seo.runs24h)} />
-          </div>
-        </Tile>
-        <Tile wide href="/incidents" icon={Lightbulb} title="Recommendations" dot={s.recommendations.total > 0 ? "var(--info)" : "var(--success)"}
+        <Tile href="/incidents" icon={Lightbulb} title="Recommendations" dot={s.recommendations.total > 0 ? "var(--info)" : "var(--success)"}
           big={num(s.recommendations.total)} unit="open recommendations" footLeft="Prometheus + CloudWatch" footRight={snapRel(s.recommendations.lastSnap)} footRightColor={stale(s.recommendations.lastSnap)}>
           <div className="text-[12.5px] leading-[1.5] text-fg-2">
             {s.recommendations.top[0]?.message ?? "No actionable wins detected — all instances right-sized."}

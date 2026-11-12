@@ -32,7 +32,6 @@ export async function GET() {
     findingsBySev, scanJobsLast24h, lastScan, openScans,
     springSnap, springLogsSnap, lambdaSnap, recsSnap,
     lastCron, lastBackfill,
-    seoTargetCount, seoWorstMobilePerf, seoLastLive, seoRuns24h,
     ...snapshotMetas
   ] = await Promise.all([
     prisma.repo.count({ where: { archived: false } }),
@@ -52,33 +51,6 @@ export async function GET() {
     readLatest<RecsPayload>("recommendations"),
     prisma.refreshRun.findFirst({ where: { kind: "cron", status: "success" }, orderBy: { startedAt: "desc" } }),
     prisma.refreshRun.findFirst({ where: { kind: "backfill", status: "success" }, orderBy: { startedAt: "desc" } }),
-    prisma.seoTarget.count({ where: { active: true } }),
-    prisma.$queryRaw<Array<{ perfScore: number | null; label: string | null; url: string; targetId: number }>>`
-      SELECT r.perfScore, t.label, t.url, r.targetId
-      FROM seo_report r
-      INNER JOIN seo_target t ON t.id = r.targetId
-      INNER JOIN (
-        SELECT targetId, MAX(runAt) AS mx
-        FROM seo_report
-        WHERE source='psi' AND device='mobile' AND status='success' AND perfScore IS NOT NULL
-        GROUP BY targetId
-      ) latest ON latest.targetId = r.targetId AND latest.mx = r.runAt
-      WHERE r.source='psi' AND r.device='mobile' AND r.status='success'
-      ORDER BY r.perfScore ASC
-      LIMIT 1
-    `,
-    prisma.seoReport.findFirst({
-      where: { status: "success", source: { in: ["psi", "gtmetrix"] } },
-      orderBy: { runAt: "desc" },
-      select: { runAt: true },
-    }),
-    prisma.seoReport.count({
-      where: {
-        status: "success",
-        source: { in: ["psi", "gtmetrix"] },
-        runAt: { gte: new Date(Date.now() - 86_400_000) },
-      },
-    }),
     ...ALL_SOURCES.map((src) => readLatest(src)),
   ]);
 
@@ -165,17 +137,6 @@ export async function GET() {
       monthlySavingsUsd: +totalSavingsUsd.toFixed(2),
       top: topRecommendations,
       lastSnap: recsSnap?.meta.capturedAt ?? null,
-    },
-    seo: {
-      targets: seoTargetCount,
-      worstMobilePerf: seoWorstMobilePerf[0]
-        ? {
-            perfScore: seoWorstMobilePerf[0].perfScore === null ? null : Number(seoWorstMobilePerf[0].perfScore),
-            label: seoWorstMobilePerf[0].label ?? seoWorstMobilePerf[0].url,
-          }
-        : null,
-      lastLiveAt: seoLastLive?.runAt.toISOString() ?? null,
-      runs24h: seoRuns24h,
     },
     ops: {
       cronLastAt: lastCron?.startedAt.toISOString() ?? null,

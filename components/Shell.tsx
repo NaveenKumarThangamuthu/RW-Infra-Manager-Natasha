@@ -26,9 +26,7 @@ function applyLayoutVars(el: HTMLElement) {
     "--s5e": W >= 960 ? 1 : W >= 480 ? 3 : 2,
     "--k6": W >= 1040 ? 6 : W >= 480 ? 3 : 2,
     "--k10": W >= 980 ? 5 : W >= 560 ? 2 : 1,
-    "--h5c": W >= 1280 ? 5 : W >= 600 ? 6 : 1,
-    "--h5a": W >= 1280 ? 1 : W >= 600 ? 2 : 1,
-    "--h5b": W >= 1280 ? 1 : W >= 600 ? 3 : 1,
+    "--h4c": W >= 1280 ? 4 : W >= 600 ? 2 : 1,
   };
   const root = document.documentElement.style;
   for (const k of Object.keys(vars)) root.setProperty(k, String(vars[k]));

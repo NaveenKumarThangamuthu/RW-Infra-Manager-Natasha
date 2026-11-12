@@ -298,6 +298,9 @@ model Repo {
   @@map("repo")
 }
 
+/// ARCHIVED — the SEO / web-perf feature was removed in November 2026 and no code
+/// reads or writes these two tables. The models stay only so that a future
+/// `prisma migrate dev` does not generate a migration that drops the stored history.
 /// One URL being monitored for SEO / web-perf. Seeded from the historical
 /// Apps Script Google Sheet, editable in-app. Each active target is polled
 /// three times a day (06:00 / 18:00 / 23:00 IST) via GTmetrix + PSI, and each

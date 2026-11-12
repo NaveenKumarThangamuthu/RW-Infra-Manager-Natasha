@@ -65,8 +65,9 @@ To add a snapshot source, update the `LiveSource` type and `ALL_SOURCES`, add a 
 - **Styling:** Tailwind for redesigned screens, with colours mapped to the CSS tokens in `app/design.css` (dark by default, light under `html[data-theme="light"]`). `app/globals.css` is the legacy stylesheet for the older pages; its variables alias to the new tokens. `app/layout.tsx` imports `tailwind-base.css`, then `globals.css`, then `design.css`, and that order matters.
 - **Imports:** use the `@/*` alias for the repo root.
 - **Security scans:** `lib/scanRepo.ts` and `lib/scanners.ts` spawn trivy and gitleaks binaries from `~/tools/` (override with `NATASHA_TRIVY_BIN` / `NATASHA_GITLEAKS_BIN`). Results go to `Finding`/`ScanJob`.
+- **Slow queries (`/slow-queries`):** two sources on one page. Statement statistics come from MySQL `performance_schema` via `lib/rdsQueryInsights.ts` (needs a read-only `RDS_QUERY_USER`/`RDS_QUERY_PASSWORD` login, otherwise it shows the "unavailable" remedy). Database trouble in the Spring logs comes from ELK via `lib/slowQueryLogs.ts`: exact counts per kind run one query at a time, while failed-statement groups and timed operations come from bounded samples and are labelled as such. `lib/slowQueryParse.ts` redacts every log line (emails, IPs, quoted values, tokens, DTO dumps) before it reaches the browser.
 - **AI brief:** `/api/brief` uses the Anthropic API when `ANTHROPIC_API_KEY` is set and falls back to a non-AI brief otherwise.
 
 ### Leftovers
 
-The SEO feature was removed in July 2026, but `SeoTarget`/`SeoReport` models and a few references remain (`app/api/dashboard/summary/route.ts`, `scripts/backfill-gtmetrix-reports.ts`). Password login was removed too, while `passwordHash`, `/api/account/password` and `scripts/set-password.ts` remain.
+The SEO / web-perf feature is fully removed from the code. Its `SeoTarget`/`SeoReport` models stay in `prisma/schema.prisma` as archived, with their data, so no migration drops the tables; nothing reads them. Password login was removed too, while `passwordHash`, `/api/account/password` and `scripts/set-password.ts` remain.

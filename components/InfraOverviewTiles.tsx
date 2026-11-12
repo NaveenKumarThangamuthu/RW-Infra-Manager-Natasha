@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useJson } from "./useJson";
 import RecommendationsTile from "./RecommendationsTile";
-import { Boxes, Sprout, Sparkle, AlertOctagon, CircleCheck, Activity, Gauge } from "lucide-react";
+import { Boxes, Sprout, Sparkle, AlertOctagon, CircleCheck, Activity } from "lucide-react";
 
 interface Resp {
   ok: boolean;
@@ -19,12 +19,6 @@ interface Resp {
     lastHealthSnap: string | null; lastLogsSnap: string | null;
   };
   lambda: { total: number; invocations24h: number; errors24h: number; lastSnap: string | null };
-  seo?: {
-    targets: number;
-    worstMobilePerf: { perfScore: number | null; label: string } | null;
-    lastLiveAt: string | null;
-    runs24h: number;
-  };
   recommendations?: {
     total: number;
     monthlySavingsUsd: number;
@@ -87,7 +81,7 @@ export default function InfraOverviewTiles() {
   if (loading && !data) return <div className="infra-tiles-skel" />;
   if (error || !data) return null;
 
-  const { github, spring, lambda, seo, recommendations } = data;
+  const { github, spring, lambda, recommendations } = data;
   const ghCrit = github.findings.CRIT;
 
   return (
@@ -189,39 +183,6 @@ export default function InfraOverviewTiles() {
           </div>
         </Link>
 
-        {seo && (
-          <Link
-            href="/seo"
-            className={`infra-tile seo ${seo.worstMobilePerf && seo.worstMobilePerf.perfScore !== null && seo.worstMobilePerf.perfScore < 50 ? "alert" : seo.worstMobilePerf && seo.worstMobilePerf.perfScore !== null && seo.worstMobilePerf.perfScore < 90 ? "warn" : ""}`}
-            aria-label="SEO / Web-Perf"
-          >
-            <div className="tile-head">
-              <span className="tile-ico" aria-hidden><Gauge size={17} /></span>
-              <span className="tile-title">SEO / Web-Perf</span>
-              <span className="tile-go" aria-hidden>↗</span>
-            </div>
-            <div className="tile-primary">
-              <span className="big tab-num" style={{ color: seo.worstMobilePerf && seo.worstMobilePerf.perfScore !== null && seo.worstMobilePerf.perfScore < 50 ? "#ef4444" : seo.worstMobilePerf && seo.worstMobilePerf.perfScore !== null && seo.worstMobilePerf.perfScore < 90 ? "#f59e0b" : "#34d399" }}>
-                {seo.worstMobilePerf && seo.worstMobilePerf.perfScore !== null ? Math.round(seo.worstMobilePerf.perfScore) : "—"}
-              </span>
-              <span className="muted small">worst mobile perf · {seo.worstMobilePerf?.label ?? "—"}</span>
-            </div>
-            <div className="tile-row">
-              <div className="metric">
-                <span className="metric-label">URLs</span>
-                <span className="metric-val tab-num">{seo.targets}</span>
-              </div>
-              <div className="metric">
-                <span className="metric-label">Runs (24h)</span>
-                <span className="metric-val tab-num">{seo.runs24h}</span>
-              </div>
-            </div>
-            <div className="tile-foot">
-              <span>PSI + GTmetrix · 3×/day</span>
-              <span className="muted">Last {relTime(seo.lastLiveAt)}</span>
-            </div>
-          </Link>
-        )}
 
         {recommendations && (
           <RecommendationsTile

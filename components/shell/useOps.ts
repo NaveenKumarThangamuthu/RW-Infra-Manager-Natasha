@@ -14,7 +14,6 @@ export interface DashboardSummary {
   spring: { total: number; down: number; highHeap: number; servicesWithErrors: number; totalErrors1h: number; lastHealthSnap: string | null; lastLogsSnap: string | null };
   lambda: { total: number; invocations24h: number; errors24h: number; lastSnap: string | null };
   recommendations: { total: number; monthlySavingsUsd: number; top: Array<{ instanceId: string; name?: string; message: string; monthlyDeltaUsd: number }>; lastSnap: string | null };
-  seo: { targets: number; worstMobilePerf: { perfScore: number | null; label: string } | null; lastLiveAt: string | null; runs24h: number };
   ops: { cronLastAt: string | null; backfillLastAt: string | null; snapshots: Record<string, SnapMeta> };
 }
 
