@@ -18,8 +18,6 @@ interface Perf {
   id: string; region: string; windowHours: number; fetchedAt: string; engine: string; engineVersion: string; instanceClass: string; status: string;
   allocatedStorageGb: number | null; multiAz: boolean; vcpu: number | null; burstable: boolean; series: Record<string, Series | null>; stats: Record<string, Stat>; issues: Issue[];
 }
-interface TopQuery { rank: number; digestText: string; countStar: number; sumRowsExamined: number; rowsExaminedPerCall: number; avgLatencyMs: number; fullScanRatio: number | null }
-interface Insights { available: boolean; reason?: string; remedy?: string; queries: TopQuery[]; issues: Issue[] }
 
 const GB = 1024 ** 3, MB = 1024 ** 2;
 const RANGES = [["3h", 3, "last 3h"], ["6h", 6, "last 6h"], ["1d", 24, "last 24h"], ["3d", 72, "last 3 days"], ["7d", 168, "last 7 days"]] as const;
@@ -58,7 +56,6 @@ function Inner() {
   const hours = RANGES.find((r) => r[0] === range)![1];
   const base = `/api/rds/${encodeURIComponent(params.id)}`;
   const { data, error, loading, reload } = useJson<{ perf: Perf }>(`${base}?region=${encodeURIComponent(region)}&hours=${hours}`);
-  const { data: q } = useJson<{ insights: Insights }>(`${base}/queries?region=${encodeURIComponent(region)}`);
 
   const back = (
     <Link href="/rds" className="inline-flex h-[30px] items-center gap-1.5 self-start rounded-[8px] pl-1.5 pr-2.5 text-[13px] font-medium text-fg-2 no-underline hover:bg-hover hover:text-foreground">
@@ -72,7 +69,6 @@ function Inner() {
   const long = hours > 24;
   const crit = p.issues.filter((i) => i.severity === "critical").length;
   const warn = p.issues.filter((i) => i.severity === "warning").length;
-  const insights = q?.insights;
   const rangeLabel = RANGES.find((r) => r[0] === range)![2];
   const kpis: Array<[string, string, string, string?]> = [
     ["CPU average", s.cpu?.avg != null ? `${s.cpu.avg.toFixed(1)}%` : "—", s.cpu?.max != null ? `Peak ${s.cpu.max.toFixed(0)}%` : "—"],
@@ -134,30 +130,6 @@ function Inner() {
               );
             })}
           </div>
-        </Card>
-        <Card>
-          <div className="px-5 pb-3 pt-4"><h3 className="m-0 text-[15px] font-semibold tracking-[-0.01em]">Top queries by rows examined</h3></div>
-          {!insights && <div className="mx-5 mb-5 text-[13px] text-muted-foreground">Loading query insights…</div>}
-          {insights && !insights.available && (
-            <div className="mx-5 mb-5 rounded-[10px] border border-dashed border-border-strong p-3.5 text-[13px] leading-[1.55]">
-              <div className="font-semibold">Not available</div>
-              <div className="mt-0.5 text-fg-2">{insights.reason}</div>
-              {insights.remedy && <div className="mt-2 text-[12.5px] text-muted-foreground">{insights.remedy}</div>}
-            </div>
-          )}
-          {insights?.available && (
-            <div className="flex flex-col gap-2.5 px-5 pb-5">
-              {insights.queries.length === 0 && <div className="text-[13px] text-muted-foreground">No query digests recorded yet.</div>}
-              {insights.queries.slice(0, 8).map((x) => (
-                <div key={x.rank} className="rounded-[10px] border border-solid border-border bg-card-2 px-3 py-2.5">
-                  <div className="line-clamp-2 break-all font-mono text-[11.5px] leading-[1.55] text-fg-2" title={x.digestText}>{x.digestText}</div>
-                  <div className="mt-1.5 flex flex-wrap gap-3 text-[12px] text-muted-foreground tnum">
-                    <span>{num(x.rowsExaminedPerCall)} rows/call</span><span>{num(x.countStar)} calls</span><span>{x.avgLatencyMs.toFixed(1)} ms avg</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
         </Card>
       </div>
       <div className="mt-2 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
