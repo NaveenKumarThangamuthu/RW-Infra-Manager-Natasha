@@ -1,5 +1,5 @@
 import {
-  Bug, Clock, Database, FileKey, Gauge, Globe, Layers, LayoutDashboard, Mail, OctagonAlert, Plug, Radio, Receipt,
+  Bug, Clock, Database, DatabaseZap, FileKey, Gauge, Globe, Layers, LayoutDashboard, Mail, OctagonAlert, Plug, Radio, Receipt,
   Server, Settings2, ShieldAlert, ShieldCheck, Shuffle, Sparkle, Sprout, type LucideIcon,
 } from "lucide-react";
 
@@ -22,6 +22,7 @@ export const NAV: NavGroup[] = [
     { href: "/perf/spring", label: "Spring", title: "Spring Services", icon: Sprout },
     { href: "/lambda", label: "Lambda", icon: Sparkle },
     { href: "/rds", label: "Databases", icon: Database },
+    { href: "/elasticsearch", label: "Elasticsearch", icon: DatabaseZap },
     { href: "/slow-queries", label: "Slow queries", icon: Gauge },
     { href: "/sns", label: "SNS", icon: Mail },
     { href: "/openas2", label: "OpenAS2 · EDI", icon: Radio },

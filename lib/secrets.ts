@@ -53,6 +53,11 @@ export const MANAGED_KEYS = new Set<string>([
   "ELK_PASS",
   "PROMETHEUS_URL",
   "CRON_SECRET",
+  "ELASTICSEARCH_HOST",
+  "ELASTICSEARCH_PORT",
+  "ELASTICSEARCH_USER",
+  "ELASTICSEARCH_PASSWORD",
+  "ES_SLOWLOG_INDEX",
 ]);
 
 function masterKey(): Buffer {
