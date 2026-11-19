@@ -33,5 +33,8 @@ public/vulnerability-report.html
 public/vulnerability-report-print.html
 public/vulnerability-report.pdf
 
+# Reports shown on /reports (RCAs, exports). Confidential — never commit.
+/data/reports/
+
 # Claude Code worktrees
 .claude/worktrees/

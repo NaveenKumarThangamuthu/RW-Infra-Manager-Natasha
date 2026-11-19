@@ -56,7 +56,7 @@ To add a snapshot source, update the `LiveSource` type and `ALL_SOURCES`, add a 
 
 - `middleware.ts` requires a NextAuth JWT session for everything except the paths excluded in its matcher. Sign-in is Google OAuth, gated by active rows in `allowed_user`.
 - Excluded machine endpoints must authenticate themselves: `Authorization: Bearer $CRON_SECRET` for cron routes, an HMAC signature for `/api/webhooks/github`. A new machine endpoint needs both a matcher exclusion and its own check.
-- The matcher also skips any path containing a `.`, so **files in `public/` are served without a session** unless the matcher lists them. `/vulnerability-report*` and `/sonar-reports/*` are listed; a new generated report needs its own entry.
+- The matcher also skips any path containing a `.`, so **files in `public/` are served without a session** unless the matcher lists them. `/vulnerability-report*` and `/sonar-reports/*` are listed; a new generated report needs its own entry. Files shown on `/reports` are not in `public/`: they live in the gitignored `data/reports/` and are served by the session-checked `/api/reports/file?name=` handler.
 
 ### Conventions
 

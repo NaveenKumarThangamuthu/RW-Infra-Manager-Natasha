@@ -1,5 +1,5 @@
 import {
-  Bug, Clock, Database, DatabaseZap, FileKey, Gauge, Globe, Layers, LayoutDashboard, Mail, OctagonAlert, Plug, Radio, Receipt,
+  Bug, Clock, Database, DatabaseZap, FileKey, FileText, Gauge, Globe, Layers, LayoutDashboard, Mail, OctagonAlert, Plug, Radio, Receipt,
   Server, Settings2, ShieldAlert, ShieldCheck, Shuffle, Sparkle, Sprout, type LucideIcon,
 } from "lucide-react";
 
@@ -34,6 +34,7 @@ export const NAV: NavGroup[] = [
     { href: "/security-groups", label: "Security Groups", icon: ShieldAlert },
   ] },
   { group: "Workspace", items: [
+    { href: "/reports", label: "Reports", icon: FileText },
     { href: "/cron", label: "Cron jobs", icon: Clock },
     { href: "/integrations", label: "Integrations", icon: Plug },
     { href: "/settings", label: "Settings", icon: Settings2 },
