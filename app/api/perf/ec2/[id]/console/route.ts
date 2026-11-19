@@ -9,7 +9,8 @@ import { getEc2Client } from "@/lib/aws";
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
-export async function GET(_req: Request, { params }: { params: { id: string } }) {
+export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const params = await ctx.params;
   const session = await getServerSession(authOptions);
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 

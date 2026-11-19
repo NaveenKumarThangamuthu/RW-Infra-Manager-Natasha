@@ -12,6 +12,8 @@ import { LOG_LEVEL_RUNTIME, levelFilters } from "./springLogLevel";
 
 /** The level searches run a small script per matching line, so they get more time than the default. */
 const LEVEL_QUERY_TIMEOUT_MS = 15_000;
+/** How far back a service must have logged to count as known to the log store. */
+const KNOWN_SERVICE_WINDOW = "now-7d";
 
 export interface FetchOutcome<T> { payload: T; via: string | null; fetchMs: number }
 
@@ -105,6 +107,22 @@ export function fetchSpringLogs() {
         latestError: lh ? { at: lh._source["@timestamp"] ?? null, message: (lh._source.message ?? "").slice(0, 400) } : null,
       };
     });
+    // A service that logged nothing in the last hour is still a known service: list it with zeros, so the
+    // page can tell "quiet this hour" from "does not ship logs under this name".
+    const seen = new Set(services.map((s) => s.service));
+    try {
+      const week = await esSearch<Buckets<object>>(index, {
+        size: 0,
+        query: { bool: { filter: [{ range: { "@timestamp": { gte: KNOWN_SERVICE_WINDOW } } }] } },
+        aggs: { services: { terms: { field: "dissect.service", size: 300 } } },
+      }, { timeoutMs: LEVEL_QUERY_TIMEOUT_MS });
+      for (const b of week.data.aggregations.services.buckets) {
+        if (!seen.has(b.key)) services.push({ service: b.key, total: 0, errors: 0, warns: 0, errorRate: 0, hosts: [], latestError: null });
+      }
+    } catch {
+      // The names list is a nicety; the hourly figures above are still correct without it.
+    }
+
     const totals = services.reduce(
       (acc, s) => ({ total: acc.total + s.total, errors: acc.errors + s.errors, warns: acc.warns + s.warns }),
       { total: 0, errors: 0, warns: 0 },

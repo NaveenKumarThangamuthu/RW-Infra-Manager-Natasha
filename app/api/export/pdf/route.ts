@@ -22,7 +22,7 @@ export async function GET(req: Request) {
   const base = `${reqUrl.protocol}//127.0.0.1:${reqUrl.port || 3000}`;
 
   // Forward the NextAuth session cookie so the rendered page is authenticated.
-  const cookieStore = cookies();
+  const cookieStore = await cookies();
   const sessionCookieName = process.env.NODE_ENV === "production"
     ? "__Secure-next-auth.session-token"
     : "next-auth.session-token";

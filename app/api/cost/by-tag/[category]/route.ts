@@ -17,7 +17,8 @@ export const maxDuration = 10;
 
 const VALID = new Set(["2.0", "3.0", "Infra", "Dev", "Shared", "Not using", "Other"]);
 
-export async function GET(req: Request, { params }: { params: { category: string } }) {
+export async function GET(req: Request, ctx: { params: Promise<{ category: string }> }) {
+  const params = await ctx.params;
   const session = await getServerSession(authOptions);
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 

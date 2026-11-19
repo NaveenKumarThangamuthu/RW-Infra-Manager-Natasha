@@ -47,17 +47,8 @@ npm run db:seed             # seeds the login allowlist (default: naveen@rw.team
 Tags (2.0 / 3.0 / Infra) are assigned inline on the **EC2 — per server** screen
 (click **Edit** on a row); they are stored in the `server_tag` table.
 
-## Cron (twice daily — 09:00 & 15:00 IST)
-IST = UTC+5:30, so 09:00 IST = 03:30 UTC and 15:00 IST = 09:30 UTC.
+## Cron (twice daily)
 
-If your server clock is **UTC**, add to crontab (`crontab -e`):
-```cron
-30 3 * * *  curl -fsS -X POST -H "Authorization: Bearer YOUR_CRON_SECRET" "https://YOUR-TUNNEL-HOSTNAME/api/refresh?label=09:00"
-30 9 * * *  curl -fsS -X POST -H "Authorization: Bearer YOUR_CRON_SECRET" "https://YOUR-TUNNEL-HOSTNAME/api/refresh?label=15:00"
-```
-
-If your server clock is **IST**:
-```cron
-0 9  * * *  curl -fsS -X POST -H "Authorization: Bearer YOUR_CRON_SECRET" "https://YOUR-TUNNEL-HOSTNAME/api/refresh?label=09:00"
-0 15 * * *  curl -fsS -X POST -H "Authorization: Bearer YOUR_CRON_SECRET" "https://YOUR-TUNNEL-HOSTNAME/api/refresh?label=15:00"
-```
+The host crontab runs `scripts/cron-refresh.sh` at 00:30 and 12:30 host time (IST). The script loads the
+cron secret from the secret store and calls the refresh endpoint on `localhost:3000` with it as a bearer
+token, so no secret is written in the crontab or in this file. See `CLAUDE.md` for the current schedule.

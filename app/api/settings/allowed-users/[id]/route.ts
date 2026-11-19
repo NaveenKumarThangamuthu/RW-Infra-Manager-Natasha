@@ -12,7 +12,8 @@ async function requireSession() {
 }
 
 /** PATCH — toggle active flag or update name. */
-export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
+export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const params = await ctx.params;
   const s = await requireSession();
   if (!s.ok) return s.resp;
   const id = Number(params.id);
@@ -43,7 +44,8 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 }
 
 /** DELETE — hard delete a user. */
-export async function DELETE(_req: NextRequest, { params }: { params: { id: string } }) {
+export async function DELETE(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const params = await ctx.params;
   const s = await requireSession();
   if (!s.ok) return s.resp;
   const id = Number(params.id);

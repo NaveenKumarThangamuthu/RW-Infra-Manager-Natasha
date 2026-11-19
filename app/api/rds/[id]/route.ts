@@ -8,7 +8,8 @@ export const maxDuration = 60;
 
 const ALLOWED_WINDOWS = new Set([3, 6, 24, 72, 168]);
 
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const params = await ctx.params;
   const session = await getServerSession(authOptions);
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 

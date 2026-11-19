@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, use } from "react";
 import Link from "next/link";
 import { useJson } from "@/components/useJson";
 import { ErrorBox, Loading } from "@/components/Common";
@@ -64,7 +64,8 @@ const fmtBytes = (n: number) => {
 };
 const fmtBps = (n: number) => `${fmtBytes(n)}/s`;
 
-export default function Page({ params }: { params: { id: string } }) {
+export default function Page(props: { params: Promise<{ id: string }> }) {
+  const params = use(props.params);
   const [window, setWindow] = useState<"1h" | "6h" | "24h">("1h");
   const { data, error, loading, reload } = useJson<Resp>(`/api/perf/ec2/${params.id}?window=${window}`);
   useAutoRefresh(reload, 60_000);

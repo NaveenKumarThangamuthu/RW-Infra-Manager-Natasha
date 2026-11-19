@@ -165,6 +165,7 @@ function Inner() {
           </div>
           <div className="text-right">
             <div className="text-[13px] font-semibold tnum" title={log ? undefined : "No application logs matched to this service"} style={{ color: errs ? (errs >= 1000 ? "var(--danger)" : "var(--fg)") : "var(--subtle-fg)" }}>{log ? num(errs) : "—"}</div>
+            {log && log.total === 0 && <div className="mt-0.5 whitespace-nowrap text-[11px] text-muted-foreground">no log lines this hour</div>}
             {log && errs > 0 && <div className="mt-0.5 whitespace-nowrap text-[11px] text-muted-foreground tnum">{num(log.total)} log lines · {(log.errorRate * 100).toFixed(log.errorRate >= 0.9995 ? 0 : 1)}% ERROR</div>}
           </div>
           <Badge tone={statusColor} className="justify-self-start gap-[5px] text-[11.5px] font-semibold">

@@ -12,7 +12,8 @@ const WINDOWS: Record<string, number> = {
   "24h": 86400,
 };
 
-export async function GET(req: Request, { params }: { params: { id: string } }) {
+export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const params = await ctx.params;
   const session = await getServerSession(authOptions);
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 

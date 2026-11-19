@@ -50,7 +50,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<ThemePref>("dark");
   const [resolvedTheme, setResolved] = useState<"dark" | "light">("dark");
   const [cmdOpen, setCmdOpen] = useState(false);
-  const toastTimer = useRef<ReturnType<typeof setTimeout>>();
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const toast = useCallback((m: string) => {
     clearTimeout(toastTimer.current);
