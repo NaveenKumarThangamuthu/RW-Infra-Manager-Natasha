@@ -12,7 +12,9 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { inScopeRepos } from "@/lib/findingScope";
 import { readLatest } from "@/lib/dataSnapshot";
+import { parsePrefix, redact } from "@/lib/slowQueryParse";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 15;
@@ -29,9 +31,14 @@ export interface Incident {
   detail: string | null;
   detectedAt: string;
   href: string | null;
+  /** How many findings a grouped repository row stands for (absent means one). */
+  count?: number;
 }
 
-const FINDING_LOOKBACK_DAYS = 7;
+/** A finding counts as open when the latest scans still saw it. Home and Repositories use the same window. */
+const FINDING_LOOKBACK_DAYS = 2;
+/** Finding groups (one per repository and rule) sent to the page per severity; the totals always cover every finding. */
+const FINDING_GROUPS_PER_SEVERITY = 100;
 const SCAN_LOOKBACK_HOURS = 24;
 const SPRING_ERROR_RATE_THRESHOLD = 0.005;
 
@@ -104,7 +111,7 @@ function fromSpringLogs(snap: SpringLogsSnap | null): Incident[] {
       severity,
       title: `${s.service} — ${(rate * 100).toFixed(2)}% error rate (${s.errors}/${s.total} in last 1h)`,
       source: s.service,
-      detail: (s.latestError?.message ?? "").split("\n")[0].slice(0, 240) || null,
+      detail: springDetail(s.latestError?.message),
       detectedAt: s.latestError?.at ?? new Date().toISOString(),
       href: `/perf/spring?service=${encodeURIComponent(s.service)}`,
     });
@@ -112,39 +119,75 @@ function fromSpringLogs(snap: SpringLogsSnap | null): Incident[] {
   return out;
 }
 
-async function githubIncidents(): Promise<Incident[]> {
-  const since = new Date(Date.now() - FINDING_LOOKBACK_DAYS * 86_400_000);
-  const rows = await prisma.finding.findMany({
-    where: { suppressedAt: null, severity: { in: ["CRIT", "HIGH"] }, lastSeenAt: { gte: since } },
-    orderBy: [{ severity: "asc" }, { lastSeenAt: "desc" }],
-    take: 200,
-  });
-  return rows.map((f) => ({
-    id: `gh:${f.id}`,
-    type: "GITHUB" as const,
-    severity: f.severity === "CRIT" ? "CRIT" : ("HIGH" as const),
-    title: f.title.slice(0, 240),
-    source: f.repoFullName,
-    detail: [f.scanner, f.ruleId, f.file ? `${f.file}${f.line ? `:${f.line}` : ""}` : null].filter(Boolean).join("  ·  "),
-    detectedAt: f.lastSeenAt.toISOString(),
-    href: `/security/${f.repoFullName}`,
-  }));
+/** The latest log line, shown only when it is an error or warning, with personal and order data masked. */
+function springDetail(message: string | null | undefined): string | null {
+  const first = (message ?? "").split("\n")[0];
+  const p = parsePrefix(first);
+  const level = (p.level ?? "").toUpperCase();
+  const relevant = !level || level === "ERROR" || level === "WARN" || level === "FATAL";
+  const text = relevant ? redact(p.body).replace(/\b\d{5,}\b/g, "<id>").slice(0, 240) : "";
+  return text || null;
 }
 
-async function scanIncidents(): Promise<Incident[]> {
-  const since = new Date(Date.now() - SCAN_LOOKBACK_HOURS * 3_600_000);
-  const failed = await prisma.scanJob.findMany({
-    where: { status: "failed", startedAt: { gte: since } },
-    orderBy: { startedAt: "desc" },
-    take: 100,
+interface FindingTotals { CRIT: number; HIGH: number; groups: number; listed: number }
+
+/** Open critical and high findings, one row per repository and rule, with totals over all of them. */
+async function githubIncidents(repoNames: string[]): Promise<{ incidents: Incident[]; totals: FindingTotals }> {
+  const since = new Date(Date.now() - FINDING_LOOKBACK_DAYS * 86_400_000);
+  const groups = await prisma.finding.groupBy({
+    by: ["repoFullName", "ruleId", "severity"],
+    where: { repoFullName: { in: repoNames }, suppressedAt: null, severity: { in: ["CRIT", "HIGH"] }, lastSeenAt: { gte: since } },
+    _count: { _all: true },
+    _max: { lastSeenAt: true, title: true },
+    _min: { scanner: true },
   });
+  const totals: FindingTotals = { CRIT: 0, HIGH: 0, groups: groups.length, listed: 0 };
+  for (const g of groups) totals[g.severity === "CRIT" ? "CRIT" : "HIGH"] += g._count._all;
+
+  groups.sort((a, b) => a.severity.localeCompare(b.severity) || b._count._all - a._count._all
+    || a.repoFullName.localeCompare(b.repoFullName) || a.ruleId.localeCompare(b.ruleId));
+  // The largest groups of each severity, so the High filter is not crowded out by critical rows.
+  const listed = ["CRIT", "HIGH"].flatMap((sev) => groups.filter((g) => g.severity === sev).slice(0, FINDING_GROUPS_PER_SEVERITY));
+  totals.listed = listed.length;
+
+  const incidents = listed.map((g) => {
+    const n = g._count._all;
+    return {
+      id: `gh:${g.repoFullName}:${g.ruleId}:${g.severity}`,
+      type: "GITHUB" as const,
+      severity: (g.severity === "CRIT" ? "CRIT" : "HIGH") as IncidentSeverity,
+      title: (g._max.title ?? g.ruleId).slice(0, 240),
+      source: g.repoFullName,
+      detail: [`${n.toLocaleString("en-US")} finding${n === 1 ? "" : "s"}`, g._min.scanner, g.ruleId].filter(Boolean).join("  ·  "),
+      detectedAt: (g._max.lastSeenAt ?? since).toISOString(),
+      href: `/security/${g.repoFullName}`,
+      count: n,
+    };
+  });
+  return { incidents, totals };
+}
+
+async function scanIncidents(repoNames: string[]): Promise<Incident[]> {
+  const since = new Date(Date.now() - SCAN_LOOKBACK_HOURS * 3_600_000);
+  // Only a repository whose most recent scan failed is still a problem.
+  const recent = await prisma.scanJob.findMany({
+    where: { repoFullName: { in: repoNames }, status: { in: ["failed", "success"] }, startedAt: { gte: since } },
+    orderBy: { startedAt: "desc" },
+    select: { id: true, repoFullName: true, branch: true, status: true, startedAt: true, errorMessage: true },
+  });
+  const seen = new Set<string>();
+  const failed = recent.filter((j) => {
+    const first = !seen.has(j.repoFullName);
+    seen.add(j.repoFullName);
+    return first && j.status === "failed";
+  }).slice(0, 100);
   return failed.map((j) => ({
     id: `scan:${j.id}`,
     type: "SCAN" as const,
     severity: "WARN" as const,
     title: `Scan failed: ${j.repoFullName} (${j.branch})`,
     source: j.repoFullName,
-    detail: j.errorMessage ?? null,
+    detail: j.errorMessage ? redact(j.errorMessage.split("\n")[0]) || null : null,
     detectedAt: j.startedAt.toISOString(),
     href: `/security/${j.repoFullName}`,
   }));
@@ -154,13 +197,14 @@ export async function GET() {
   const session = await getServerSession(authOptions);
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+  const scope = await inScopeRepos();
   const [ec2Snap, cwSnap, promSnap, springLogsSnap, gh, scan] = await Promise.all([
     readLatest<Ec2Snap>("ec2-health"),
     readLatest<CwSnap>("cloudwatch-alarms"),
     readLatest<PromSnap>("prom-alerts"),
     readLatest<SpringLogsSnap>("spring-logs"),
-    githubIncidents(),
-    scanIncidents(),
+    githubIncidents(scope.names),
+    scanIncidents(scope.names),
   ]);
 
   const ec2 = fromEc2(ec2Snap?.payload ?? null);
@@ -168,16 +212,18 @@ export async function GET() {
   const prom = fromPrometheus(promSnap?.payload ?? null);
   const spring = fromSpringLogs(springLogsSnap?.payload ?? null);
 
-  const all = [...ec2, ...gh, ...spring, ...cw, ...prom, ...scan];
+  const all = [...ec2, ...gh.incidents, ...spring, ...cw, ...prom, ...scan];
   const sevOrder: Record<IncidentSeverity, number> = { CRIT: 0, HIGH: 1, WARN: 2, INFO: 3 };
   all.sort((a, b) => {
     if (a.severity !== b.severity) return sevOrder[a.severity] - sevOrder[b.severity];
-    return b.detectedAt.localeCompare(a.detectedAt);
+    return (b.count ?? 1) - (a.count ?? 1) || b.detectedAt.localeCompare(a.detectedAt);
   });
 
-  const byType: Record<IncidentType, number> = { EC2: ec2.length, GITHUB: gh.length, SPRING: spring.length, CLOUDWATCH: cw.length, PROMETHEUS: prom.length, SCAN: scan.length };
-  const bySeverity: Record<IncidentSeverity, number> = { CRIT: 0, HIGH: 0, WARN: 0, INFO: 0 };
-  for (const i of all) bySeverity[i.severity]++;
+  // Counts cover every open finding, not only the groups listed, so the sidebar, this page and Home agree.
+  const findingCount = gh.totals.CRIT + gh.totals.HIGH;
+  const byType: Record<IncidentType, number> = { EC2: ec2.length, GITHUB: findingCount, SPRING: spring.length, CLOUDWATCH: cw.length, PROMETHEUS: prom.length, SCAN: scan.length };
+  const bySeverity: Record<IncidentSeverity, number> = { CRIT: gh.totals.CRIT, HIGH: gh.totals.HIGH, WARN: 0, INFO: 0 };
+  for (const i of all) if (i.type !== "GITHUB") bySeverity[i.severity]++;
 
   const sourceMeta = {
     "ec2-health": ec2Snap?.meta ?? null,
@@ -194,9 +240,10 @@ export async function GET() {
     ok: true,
     fetchedAt: new Date().toISOString(),
     snapshotOldestAt: oldestSnap,
-    total: all.length,
+    total: all.length - gh.incidents.length + findingCount,
     byType,
     bySeverity,
+    findings: { ...gh.totals, windowDays: FINDING_LOOKBACK_DAYS },
     incidents: all,
     sourceMeta,
   });

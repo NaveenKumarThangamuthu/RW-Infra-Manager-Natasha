@@ -13,6 +13,7 @@ import { useOnRefreshed } from "@/components/shell/ShellContext";
 import { useJson } from "@/components/useJson";
 import { useMonthParam, withMonth } from "@/components/useMonth";
 import { cn, tint } from "@/lib/utils";
+import { periodText } from "./dashboard/period";
 
 interface UsageRow { usageType: string; category: string; amount: number; unit: string }
 interface RegionRow { region: string; public: number; private: number; other: number; total: number }
@@ -39,22 +40,39 @@ const USAGE_PREFIX: Record<string, string> = {
 
 interface Flow { key: string; from: string; fromIcon: LucideIcon; to: string; toIcon: LucideIcon; kind: FlowKind; usage: string; cost: number }
 
-/** AWS encodes the region in a usage-type prefix; un-prefixed types bill to the account's largest region. */
-function regionOf(usage: string, fallback: string): string {
-  return USAGE_PREFIX[usage.split("-")[0]] ?? fallback;
+/** AWS puts the region in a usage-type prefix; a type with no prefix is billed in us-east-1. */
+const DEFAULT_REGION = "us-east-1";
+function regionOf(usage: string): string {
+  return USAGE_PREFIX[usage.split("-")[0]] ?? DEFAULT_REGION;
 }
 
-function classify(usage: string, amount: number, i: number, fallback: string): Flow {
+/** "USE1-USE2-AWS-Out-Bytes": traffic between two regions, named by both prefixes. */
+const BETWEEN_REGIONS = /^([A-Z]{2,4}\d?)-([A-Z]{2,4}\d?)-AWS-(In|Out)-Bytes$/;
+
+function classify(usage: string, amount: number, i: number): Flow {
   const s = usage.toLowerCase();
-  const region = regionOf(usage, fallback);
+  const region = regionOf(usage);
   const base = { key: `${usage}-${i}`, usage, cost: amount };
-  if (s.includes("cross-region") || s.includes("interregion") || s.includes("inter-region")) return { ...base, kind: "xreg", from: region, fromIcon: Globe, to: "other region", toIcon: Globe };
-  if (s.includes("in-bytes") && s.includes("public")) return { ...base, kind: "ingress", from: "Internet", fromIcon: Globe, to: `${region} · EC2`, toIcon: Server };
-  if (s.includes("out-bytes") || s.includes("egress") || s.includes("cloudfront") || s.includes("public-out")) return { ...base, kind: "egress", from: `${region} · EC2`, fromIcon: Server, to: "Internet · CDN", toIcon: Globe };
-  if (s.includes("regional") && (s.includes("in-out") || s.includes("bytes"))) return { ...base, kind: "xaz", from: `${region} · AZ-a`, fromIcon: Layers, to: `${region} · AZ-b`, toIcon: Layers };
-  if (s.includes("intra") || s.includes("same-az")) return { ...base, kind: "same", from: `${region} · AZ-a`, fromIcon: Layers, to: `${region} · AZ-a`, toIcon: Layers };
+  const pair = BETWEEN_REGIONS.exec(usage);
+  if (pair) {
+    const here = USAGE_PREFIX[pair[1]] ?? pair[1];
+    const there = USAGE_PREFIX[pair[2]] ?? pair[2];
+    return pair[3] === "Out"
+      ? { ...base, kind: "xreg", from: here, fromIcon: Globe, to: there, toIcon: Globe }
+      : { ...base, kind: "xreg", from: there, fromIcon: Globe, to: here, toIcon: Globe };
+  }
+  if (s.includes("cross-region") || s.includes("interregion") || s.includes("inter-region")) return { ...base, kind: "xreg", from: region, fromIcon: Globe, to: "another region", toIcon: Globe };
+  if (s.includes("in-bytes") && s.includes("public")) return { ...base, kind: "ingress", from: "Internet", fromIcon: Globe, to: region, toIcon: Server };
+  if (s.includes("out-bytes") || s.includes("egress") || s.includes("cloudfront") || s.includes("public-out")) return { ...base, kind: "egress", from: region, fromIcon: Server, to: "Internet", toIcon: Globe };
+  // AWS does not say which zones were involved, only that the traffic crossed between two of them.
+  if (s.includes("regional") && (s.includes("in-out") || s.includes("bytes"))) return { ...base, kind: "xaz", from: region, fromIcon: Layers, to: "another zone", toIcon: Layers };
+  if (s.includes("intra") || s.includes("same-az")) return { ...base, kind: "same", from: region, fromIcon: Layers, to: "same zone", toIcon: Layers };
   return { ...base, kind: "other", from: region, fromIcon: Globe, to: "AWS", toIcon: Cloud };
 }
+
+/** Anything that prints as $0.00. */
+const isZero = (amount: number) => Math.abs(amount) < 0.005;
+const regionName = (r: string) => (r === "NoRegion" ? "Global" : r);
 
 const REGION_COLS = "minmax(140px,1fr) 96px 96px 96px minmax(160px,1.4fr) 96px";
 const USAGE_COLS = "minmax(240px,1.6fr) 130px minmax(140px,1fr) 90px";
@@ -72,12 +90,9 @@ function Inner() {
   const [flow, setFlow] = useState<FlowKind | "all">("all");
 
   const regions = useMemo(() => [...(data?.byRegion ?? [])].sort((a, b) => b.total - a.total), [data]);
-  const flows = useMemo(() => {
-    const top = regions[0]?.region ?? "AWS";
-    return (data?.byUsageType ?? []).filter((u) => u.amount > 0.01).map((u, i) => classify(u.usageType, u.amount, i, top)).sort((a, b) => b.cost - a.cost);
-  }, [data, regions]);
+  const flows = useMemo(() => (data?.byUsageType ?? []).filter((u) => u.amount > 0.01).map((u, i) => classify(u.usageType, u.amount, i)).sort((a, b) => b.cost - a.cost), [data]);
 
-  const header = <PageHeader title="Data Transfer" description="Transfer cost split into public-IP vs private-IP traffic, plus a flow-level view showing every direction." actions={<MonthPicker />} />;
+  const header = <PageHeader title="Data Transfer" description="Transfer cost split into internet-facing and internal traffic, with a view of each direction." actions={<MonthPicker />} />;
   if (error) return <Screen label="Data Transfer">{header}<ErrorNote message={error} onRetry={reload} /></Screen>;
   if (!data) return <ScreenSkeleton />;
 
@@ -87,7 +102,9 @@ function Inner() {
   const rMax = Math.max(0.0001, ...regions.map((r) => r.total));
   const needle = q.trim().toLowerCase();
   const allUsage = data.byUsageType;
-  const usage = allUsage.filter((u) => (bucket === "all" || BUCKETS[u.category]?.key === bucket) && (zeros || u.amount > 0) && (!needle || u.usageType.toLowerCase().includes(needle))).sort((a, b) => b.amount - a.amount);
+  const usage = allUsage.filter((u) => (bucket === "all" || BUCKETS[u.category]?.key === bucket) && (zeros || !isZero(u.amount)) && (!needle || u.usageType.toLowerCase().includes(needle))).sort((a, b) => b.amount - a.amount);
+  const shownRegions = regions.filter((r) => zeros || !isZero(r.total));
+  const hiddenRegions = regions.length - shownRegions.length;
   const uMax = Math.max(0.0001, ...allUsage.map((u) => u.amount));
   const shownFlows = (flow === "all" ? flows : flows.filter((f) => f.kind === flow));
   const flowTotal = flows.reduce((a, f) => a + f.cost, 0);
@@ -113,16 +130,16 @@ function Inner() {
         </Kpi>
       </KpiGrid>
       <Card className="overflow-hidden">
-        <CardHeader title="By region · public vs private" description="Month-to-date transfer cost per region" className="pb-3.5"
+        <CardHeader title="By region · public vs private" description="Transfer cost per region for the period" className="pb-3.5"
           actions={<div className="flex flex-wrap gap-3.5 text-[12px] text-muted-foreground">{legend("var(--cinfra)", "Public")}{legend("var(--cshared)", "Private")}{legend("var(--c30)", "Other")}</div>} />
         <div className="overflow-x-auto">
           <div className="min-w-[760px]">
             <div className={cn(HEAD, "gap-4")} style={{ gridTemplateColumns: REGION_COLS }}>
               <span>Region</span><span className="text-right">Public IP</span><span className="text-right">Private IP</span><span className="text-right">Other</span><span>Split</span><span className="text-right">Total</span>
             </div>
-            {regions.map((r) => (
-              <div key={r.region} className={cn("grid min-h-[42px] items-center gap-4 border-0 border-b border-solid border-border px-5 text-[13px] hover:bg-hover", !r.total && "opacity-50")} style={{ gridTemplateColumns: REGION_COLS }}>
-                <span className="font-mono text-[12.5px]">{r.region}</span>
+            {shownRegions.map((r) => (
+              <div key={r.region} className={cn("grid min-h-[42px] items-center gap-4 border-0 border-b border-solid border-border px-5 text-[13px] hover:bg-hover", isZero(r.total) && "opacity-50")} style={{ gridTemplateColumns: REGION_COLS }}>
+                <span className="font-mono text-[12.5px]">{regionName(r.region)}</span>
                 {[r.public, r.private, r.other].map((v, i) => <span key={i} className="text-right text-fg-2 tnum">{usd(v)}</span>)}
                 <span className="flex h-2 overflow-hidden rounded-[8px] bg-card-2">
                   <span style={{ width: `${(r.public / rMax) * 100}%`, background: "var(--cinfra)" }} />
@@ -132,8 +149,12 @@ function Inner() {
                 <span className="text-right font-semibold tnum">{usd(r.total)}</span>
               </div>
             ))}
+            {shownRegions.length === 0 && <div className="px-5 py-8 text-center text-[13px] text-muted-foreground">No transfer cost in any region this period.</div>}
           </div>
         </div>
+        {hiddenRegions > 0 && (
+          <div className="px-5 pb-4 pt-3 text-[12.5px] text-muted-foreground">{hiddenRegions} region{hiddenRegions === 1 ? "" : "s"} at $0.00 hidden. Use “Include $0.00” below to show them.</div>
+        )}
       </Card>
       <Card className="overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
@@ -153,7 +174,7 @@ function Inner() {
             {usage.map((u) => {
               const b = BUCKETS[u.category] ?? { label: u.category, color: "var(--muted-fg)" };
               return (
-                <div key={u.usageType} className={cn("grid min-h-10 items-center gap-4 border-0 border-b border-solid border-border px-5 text-[13px] hover:bg-hover", !u.amount && "opacity-50")} style={{ gridTemplateColumns: USAGE_COLS }}>
+                <div key={u.usageType} className={cn("grid min-h-10 items-center gap-4 border-0 border-b border-solid border-border px-5 text-[13px] hover:bg-hover", isZero(u.amount) && "opacity-50")} style={{ gridTemplateColumns: USAGE_COLS }}>
                   <span className="truncate font-mono text-[12.5px]">{u.usageType}</span>
                   <span><span className="inline-flex h-[22px] items-center gap-1.5 rounded-[6px] px-2 text-[12px] font-medium text-fg-2" style={{ background: tint(b.color) }}><span className="h-1.5 w-1.5 rounded-[6px]" style={{ background: b.color }} />{b.label}</span></span>
                   <span className="block h-1.5 overflow-hidden rounded-[6px] bg-card-2"><span className="block h-full rounded-[6px]" style={{ width: `${u.amount > 0 ? Math.max(0.8, (u.amount / uMax) * 100) : 0}%`, background: b.color }} /></span>
@@ -164,10 +185,10 @@ function Inner() {
             {usage.length === 0 && <div className="px-5 py-10 text-center text-[13px] text-muted-foreground">No usage types match these filters.</div>}
           </div>
         </div>
-        <div className="px-5 pb-4 pt-3 text-[12.5px] text-muted-foreground">AWS bills data transfer by usage type, not per IP. Period <span className="font-mono">{data.range.Start} → {data.range.End}</span>.</div>
+        <div className="px-5 pb-4 pt-3 text-[12.5px] text-muted-foreground">AWS bills data transfer by usage type, not per IP address. Period {periodText(data.range)}.</div>
       </Card>
       <Card className="overflow-hidden">
-        <CardHeader title="Flow-level transfer" description="Where each transfer dollar goes, by direction" className="pb-3"
+        <CardHeader title="Transfer by direction" description="Where each transfer dollar goes, read from the usage type" className="pb-3"
           actions={<Badge size="md" className="text-fg-2">{flows.length} flows · {usd(flowTotal)}</Badge>} />
         <div className="flex flex-wrap gap-1.5 px-5 pb-3.5">
           {(["all", "egress", "ingress", "xreg", "xaz", "same", "other"] as const).map((k) => {
@@ -183,7 +204,7 @@ function Inner() {
         </div>
         <div className="overflow-x-auto">
           <div className="min-w-[900px]">
-            <div className={cn(HEAD, "gap-3.5")} style={{ gridTemplateColumns: FLOW_COLS }}><span>From</span><span /><span>To</span><span>Type</span><span>Usage type</span><span className="text-right">Cost MTD</span></div>
+            <div className={cn(HEAD, "gap-3.5")} style={{ gridTemplateColumns: FLOW_COLS }}><span>From</span><span /><span>To</span><span>Type</span><span>Usage type</span><span className="text-right">Cost</span></div>
             {shownFlows.slice(0, FLOW_LIMIT).map((f) => {
               const t = FLOW_TYPES[f.kind], From = f.fromIcon, To = f.toIcon;
               return (

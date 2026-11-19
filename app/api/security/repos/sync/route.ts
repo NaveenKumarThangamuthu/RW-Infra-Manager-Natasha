@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { getCurrentToken, listRepos, resolveScanBranches } from "@/lib/github";
+import { archiveVanishedRepos, REPO_LIST_LIMIT } from "@/lib/repoSync";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -15,7 +16,7 @@ export async function POST() {
   if (!creds) return NextResponse.json({ error: "GitHub not connected" }, { status: 400 });
 
   try {
-    const all = await listRepos(creds.token, 500);
+    const all = await listRepos(creds.token, REPO_LIST_LIMIT);
     const branches = await resolveScanBranches(
       creds.token,
       all.map((r) => ({ owner: r.owner.login, name: r.name, default_branch: r.default_branch })),
@@ -58,6 +59,15 @@ export async function POST() {
       }
     }
 
+    // Repos that GitHub no longer lists are taken out of scan scope (never deleted).
+    // With more than one GitHub connection, one person's listing is not the whole
+    // picture, so that case is left to the scheduled sync, which combines them all.
+    const connections = await prisma.githubConnection.count({ where: { revokedAt: null } });
+    const vanished = await archiveVanishedRepos(
+      all.map((r) => ({ fullName: r.full_name, owner: r.owner.login })),
+      { complete: connections === 1 && all.length < REPO_LIST_LIMIT },
+    );
+
     const total = await prisma.repo.count();
     const active = await prisma.repo.count({ where: { archived: false } });
 
@@ -67,6 +77,7 @@ export async function POST() {
       fetched: all.length,
       inserted,
       updated,
+      archivedMissing: vanished.archived,
       total,
       active,
     });

@@ -7,7 +7,8 @@
  * Risk model:
  *   - "risky-port"     — 0.0.0.0/0 allowed on a well-known sensitive port (SSH/RDP/DBs)
  *   - "wide-open"      — 0.0.0.0/0 with no port constraint (allows ALL ports)
- *   - "unused"         — no ENI references this SG (safe to delete)
+ *   - "unused"         — no network interface uses this SG. Not the same as safe to delete:
+ *                        AWS default groups cannot be deleted and other groups' rules may reference it.
  *   - "large-range"    — a CIDR /8 through /16 open on any port (not necessarily 0/0)
  */
 import {
@@ -60,6 +61,10 @@ export interface SgSummary {
   attachedInstanceIds: string[];
   flags: string[]; // aggregate: "risky" | "wide-open" | "unused"
   worstFlag: "wide-open" | "risky" | "unused" | null;
+  /** The VPC's built-in "default" group, which AWS does not allow deleting. */
+  isDefault: boolean;
+  /** How many other groups name this one as a source or destination in their rules. */
+  referencedByCount: number;
 }
 
 export interface SgInventory {
@@ -174,6 +179,8 @@ async function fetchRegion(region: string): Promise<{ sgs: SgSummary[]; sgIdToEn
       attachedInstanceIds,
       flags: aggFlags,
       worstFlag,
+      isDefault: sg.GroupName === "default",
+      referencedByCount: 0,
     };
   });
 
@@ -191,6 +198,19 @@ export async function fetchSecurityGroups(opts: { force?: boolean } = {}): Promi
     regions.map((r) => fetchRegion(r).catch(() => ({ sgs: [] as SgSummary[], sgIdToEnis: new Map<string, string[]>() })))
   );
   const groups = perRegion.flatMap((r) => r.sgs);
+
+  const referencedBy = new Map<string, Set<string>>();
+  for (const g of groups) {
+    for (const rule of [...g.inbound, ...g.outbound]) {
+      for (const target of rule.sgSources) {
+        if (target === g.id) continue;
+        const set = referencedBy.get(target) ?? new Set<string>();
+        set.add(g.id);
+        referencedBy.set(target, set);
+      }
+    }
+  }
+  for (const g of groups) g.referencedByCount = referencedBy.get(g.id)?.size ?? 0;
 
   const riskyCount = groups.filter((g) => g.flags.includes("risky")).length;
   const wideOpenCount = groups.filter((g) => g.flags.includes("wide-open")).length;

@@ -1,17 +1,17 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronDown, ChevronRight, Download, Loader2, Menu, Moon, PanelLeft, RefreshCw, Search, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useJson } from "@/components/useJson";
-import { ago, ageMinutes } from "@/components/natasha/format";
+import { ago, ageMinutes, istDateTime } from "@/components/natasha/format";
 import { cn } from "@/lib/utils";
 import { useOnRefreshed, useShell } from "./ShellContext";
 import { useSummary } from "./useOps";
 
 const SNAP_LABELS: Array<[string, string]> = [
-  ["spring-health", "Spring health"], ["spring-logs", "ELK logs"], ["ec2-health", "EC2"], ["ec2-volumes", "Volumes"],
+  ["spring-health", "Spring health"], ["spring-logs", "Spring logs"], ["ec2-health", "EC2"], ["ec2-volumes", "Volumes"],
   ["cloudwatch-alarms", "CloudWatch"], ["prom-alerts", "Prometheus"], ["recommendations", "Recommendations"], ["lambda-ohio", "Lambda"],
 ];
 const STALE_MIN = 36 * 60;
@@ -31,7 +31,7 @@ function FreshnessPanel({ onClose }: { onClose: () => void }) {
       <div className="text-[13.5px] font-semibold">Data freshness</div>
       <div className="mt-0.5 text-[12px] leading-[1.5] text-muted-foreground">
         {status?.lastRefreshAt
-          ? `Last refreshed ${new Date(status.lastRefreshAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour12: true })} IST${status.lastRunLabel ? ` · ${status.lastRunLabel}` : ""}`
+          ? `Last refreshed ${istDateTime(status.lastRefreshAt)}`
           : "No refresh recorded yet"}
       </div>
       <div className="mt-2.5 flex flex-col">
@@ -86,8 +86,15 @@ export function AppHeader({ title, mobile, onToggleSidebar }: { title: string; m
   useOnRefreshed(reload);
   const [fresh, setFresh] = useState(false);
   const pdf = usePdfExport();
-  const syncMin = ageMinutes(status?.lastRefreshAt);
-  const syncColor = syncMin == null || syncMin > STALE_MIN ? "bg-warning" : "bg-success";
+  const { data: summary } = useSummary();
+  const isOld = (iso: string | null | undefined) => { const m = ageMinutes(iso); return m == null || m > STALE_MIN; };
+  // Amber when the refresh itself is old, or when any single source stopped updating while the rest carried on.
+  const staleSources = summary ? SNAP_LABELS.filter(([k]) => isOld(summary.ops.snapshots[k]?.capturedAt)).map(([, name]) => name) : [];
+  const syncColor = isOld(status?.lastRefreshAt) || staleSources.length > 0 ? "bg-warning" : "bg-success";
+  const syncTitle = staleSources.length > 0 ? `Out of date: ${staleSources.join(", ")}` : "Data freshness";
+  // Macs use the Command key; everything else uses Ctrl. Decided after mount so server and browser render the same first.
+  const [mac, setMac] = useState(false);
+  useEffect(() => { setMac(/Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent)); }, []);
 
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-0 border-b border-solid border-border bg-background pl-3.5 pr-3">
@@ -114,17 +121,17 @@ export function AppHeader({ title, mobile, onToggleSidebar }: { title: string; m
         <button type="button" onClick={() => setCmdOpen(true)} className="flex h-[34px] min-w-10 flex-[0_1_280px] cursor-pointer items-center gap-2 rounded-[8px] border border-solid border-border bg-card pl-2.5 pr-2 text-[13px] text-muted-foreground hover:border-border-strong">
           <Search size={14} className="block shrink-0" />
           <span className="min-w-0 flex-1 truncate text-left">Search or jump to…</span>
-          <kbd className="rounded-[5px] border border-solid border-border bg-card-2 px-1.5 py-px font-mono text-[11px] text-muted-foreground">⌘K</kbd>
+          <kbd className="rounded-[5px] border border-solid border-border bg-card-2 px-1.5 py-px font-mono text-[11px] text-muted-foreground">{mac ? "⌘K" : "Ctrl K"}</kbd>
         </button>
       )}
       <Popover open={fresh} onOpenChange={setFresh}>
         <PopoverTrigger asChild>
           {mobile ? (
-            <button type="button" title="Data freshness" className="inline-grid h-[34px] w-[34px] shrink-0 cursor-pointer place-items-center rounded-[8px] border border-solid border-border bg-card">
+            <button type="button" title={syncTitle} className="inline-grid h-[34px] w-[34px] shrink-0 cursor-pointer place-items-center rounded-[8px] border border-solid border-border bg-card">
               <span className={cn("h-2 w-2 rounded-[8px]", syncColor)} />
             </button>
           ) : (
-            <button type="button" className="inline-flex h-[34px] cursor-pointer items-center gap-[7px] whitespace-nowrap rounded-[8px] border border-solid border-border bg-card px-2.5 text-[13px] font-medium text-foreground hover:bg-hover">
+            <button type="button" title={syncTitle} className="inline-flex h-[34px] cursor-pointer items-center gap-[7px] whitespace-nowrap rounded-[8px] border border-solid border-border bg-card px-2.5 text-[13px] font-medium text-foreground hover:bg-hover">
               <span className={cn("h-[7px] w-[7px] rounded-[7px]", syncColor)} />
               {status ? `Synced ${ago(status.lastRefreshAt)}` : "Syncing…"}
               <span className="text-muted-foreground"><ChevronDown size={14} className="block" /></span>

@@ -18,6 +18,14 @@ interface RegionsResp { range: { Start: string; End: string }; total: number; re
 const TOP_COLS = 8;
 const HEAT_GRID = `130px repeat(${TOP_COLS},minmax(96px,1fr))`;
 const GROUP_GRID = "16px minmax(180px,1.4fr) minmax(100px,1fr) 56px 90px";
+/** Anything that prints as $0.00. */
+const isZero = (amount: number) => Math.abs(amount) < 0.005;
+/** One share format for region and service rows. */
+function shareText(amount: number, total: number): string {
+  if (isZero(amount) || total <= 0) return "—";
+  const pct = (amount / total) * 100;
+  return pct > 0 && pct < 0.1 ? "<0.1%" : `${pct.toFixed(1)}%`;
+}
 const EMPTY_CELL = "color-mix(in oklab, var(--fg) 2.5%, transparent)";
 
 function Inner() {
@@ -35,14 +43,14 @@ function Inner() {
     for (const r of regions) for (const s of r.services) {
       const e = m.get(s.service) ?? { total: 0, regions: 0 };
       e.total += s.cost;
-      if (s.cost > 0) e.regions++;
+      if (!isZero(s.cost)) e.regions++;
       m.set(s.service, e);
     }
     return Array.from(m.entries()).sort((a, b) => b[1].total - a[1].total);
   }, [regions]);
 
   const header = (
-    <PageHeader title="Regions" description="Region × service cost matrix — see where your bill concentrates geographically." actions={<MonthPicker />} />
+    <PageHeader title="Regions" description="Cost by region and service: where the bill concentrates geographically." actions={<MonthPicker />} />
   );
   if (error) return <Screen label="Regions">{header}<ErrorNote message={error} onRetry={reload} /></Screen>;
   if (!data) return <ScreenSkeleton />;
@@ -51,22 +59,23 @@ function Inner() {
   const cols = svcTotals.slice(0, TOP_COLS).map(([name]) => name);
   const cost = (r: RegionEntry, svc: string) => r.services.find((s) => s.service === svc)?.cost ?? null;
   const heatMax = Math.max(0.0001, ...regions.flatMap((r) => cols.map((c) => cost(r, c) ?? 0)));
-  const withSpend = regions.filter((r) => cols.some((c) => (cost(r, c) ?? 0) > 0));
+  // Every region with spend gets a row, including ones (such as "global") whose spend is outside the top services.
+  const withSpend = regions.filter((r) => !isZero(r.total));
   const heatRows = all ? regions : withSpend;
-  const spending = regions.filter((r) => r.total > 0).length;
+  const spending = withSpend.length;
   const top = regions[0];
   const topSvc = svcTotals[0];
   const needle = q.trim().toLowerCase();
   // Regions above 25% of the bill start open; the rest start collapsed so the long tail stays out of the way.
   const isOpen = (r: RegionEntry) => (toggled[r.region] ?? (total > 0 && r.total / total >= 0.25));
-  const groups = regions.filter((r) => zeros || r.total > 0);
+  const groups = regions.filter((r) => zeros || !isZero(r.total));
   const maxItem = Math.max(0.0001, ...regions.flatMap((r) => r.services.map((s) => s.cost)));
 
   return (
     <Screen label="Regions">
       {header}
       <KpiGrid>
-        <Kpi label="Month-to-date" value={usd(total)} footer={`Across ${regions.length} regions`} />
+        <Kpi label="Total for the period" value={usd(total)} footer={`Across ${spending} region${spending === 1 ? "" : "s"} with spend`} />
         <Kpi label="Top region" value={<span className="font-mono text-[26px] tracking-[-0.02em]">{top?.region ?? "—"}</span>}
           footer={top && <span className="tnum">{usd(top.total)} · {total > 0 ? ((top.total / total) * 100).toFixed(1) : "0.0"}% of the bill</span>} />
         <Kpi label="Top service" value={topSvc ? shortService(topSvc[0]) : "—"} footer={topSvc && <span className="tnum">{usd(topSvc[1].total)} across {topSvc[1].regions} region{topSvc[1].regions === 1 ? "" : "s"}</span>} />
@@ -75,9 +84,9 @@ function Inner() {
       <Card className="overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 px-5 pb-3.5 pt-[18px]">
           <div>
-            <h3 className="m-0 text-[15px] font-semibold tracking-[-0.01em]">Region × service heatmap</h3>
+            <h3 className="m-0 text-[15px] font-semibold tracking-[-0.01em]">Spend by region and service</h3>
             <div className="mt-[3px] text-[13px] text-muted-foreground tnum">
-              {all ? `${regions.length} regions · top ${cols.length} services · ${usd(total)} MTD` : `Showing ${heatRows.length} of ${regions.length} regions with top-${cols.length} spend · ${usd(total)} MTD`}
+              {all ? `${regions.length} regions · top ${cols.length} services · ${usd(total)} in total` : `${heatRows.length} of ${regions.length} regions have spend · top ${cols.length} services · ${usd(total)} in total`}
             </div>
           </div>
           <CheckButton on={all} onClick={() => setAll((v) => !v)}>Show all {regions.length} regions</CheckButton>
@@ -96,7 +105,7 @@ function Inner() {
                   return (
                     <span key={c} className="flex h-[38px] items-center justify-end rounded-[6px] px-2.5 text-[12.5px] font-medium tnum"
                       style={{
-                        background: v != null && v > 0 ? tint("var(--brand)", Math.round(8 + 62 * Math.sqrt(v / heatMax))) : EMPTY_CELL,
+                        background: v != null && !isZero(v) && v > 0 ? tint("var(--brand)", Math.round(8 + 62 * Math.sqrt(v / heatMax))) : EMPTY_CELL,
                         color: v == null ? "var(--subtle-fg)" : v > 0 ? "var(--fg)" : "var(--muted-fg)",
                       }}>{v == null ? "—" : usd(v)}</span>
                   );
@@ -118,8 +127,8 @@ function Inner() {
       <Card className="overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
           <div>
-            <h3 className="m-0 text-[15px] font-semibold tracking-[-0.01em]">Region × service breakdown</h3>
-            <div className="mt-[3px] text-[13px] text-muted-foreground">Month-to-date · share of the {usd(total)} bill · click a region to collapse it</div>
+            <h3 className="m-0 text-[15px] font-semibold tracking-[-0.01em]">Services in each region</h3>
+            <div className="mt-[3px] text-[13px] text-muted-foreground">Share of the {usd(total)} bill · select a region to open or close it</div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <CheckButton on={zeros} onClick={() => setZeros((v) => !v)}>Include $0.00</CheckButton>
@@ -130,7 +139,7 @@ function Inner() {
           <div className="min-w-[560px]">
             {groups.map((g) => {
               const open = isOpen(g);
-              const items = g.services.filter((x) => (zeros || x.cost > 0) && (!needle || x.service.toLowerCase().includes(needle))).sort((a, b) => b.cost - a.cost);
+              const items = g.services.filter((x) => (zeros || !isZero(x.cost)) && (!needle || x.service.toLowerCase().includes(needle) || shortService(x.service).toLowerCase().includes(needle))).sort((a, b) => b.cost - a.cost);
               const hidden = g.services.length - items.length;
               return (
                 <div key={g.region}>
@@ -139,15 +148,15 @@ function Inner() {
                     <span className={cn("grid place-items-center text-muted-foreground transition-transform duration-150", open && "rotate-90")}><ChevronRight size={14} className="block" /></span>
                     <span className="font-mono text-[13px] font-semibold">{g.region}</span>
                     <span className="block h-1.5 overflow-hidden rounded-[6px] bg-card"><span className="block h-full rounded-[6px] bg-brand" style={{ width: `${total > 0 ? Math.max(g.total > 0 ? 0.6 : 0, (g.total / total) * 100) : 0}%` }} /></span>
-                    <span className="text-right text-[12px] text-muted-foreground tnum">{total > 0 ? ((g.total / total) * 100).toFixed(1) : "0.0"}%</span>
+                    <span className="text-right text-[12px] text-muted-foreground tnum">{shareText(g.total, total)}</span>
                     <span className="text-right text-[13.5px] font-semibold tnum">{usd(g.total)}</span>
                   </button>
                   {open && items.map((x) => (
-                    <div key={x.service} className={cn("grid min-h-10 items-center gap-3.5 border-0 border-t border-solid border-border px-5 text-[13px] hover:bg-hover", !x.cost && "opacity-50")} style={{ gridTemplateColumns: GROUP_GRID }}>
+                    <div key={x.service} className={cn("grid min-h-10 items-center gap-3.5 border-0 border-t border-solid border-border px-5 text-[13px] hover:bg-hover", isZero(x.cost) && "opacity-50")} style={{ gridTemplateColumns: GROUP_GRID }}>
                       <span />
-                      <span className="min-w-0 truncate">{x.service}</span>
+                      <span className="min-w-0 truncate" title={x.service}>{shortService(x.service)}</span>
                       <span className="block h-[5px] overflow-hidden rounded-[5px] bg-card-2"><span className="block h-full rounded-[5px]" style={{ width: `${x.cost > 0 ? Math.max(0.6, (x.cost / maxItem) * 100) : 0}%`, background: tint("var(--brand)", 70) }} /></span>
-                      <span className="text-right text-[12px] text-muted-foreground tnum">{x.cost > 0 && total > 0 ? ((x.cost / total) * 100 < 0.1 ? "<0.1%" : `${((x.cost / total) * 100).toFixed(1)}%`) : "—"}</span>
+                      <span className="text-right text-[12px] text-muted-foreground tnum">{shareText(x.cost, total)}</span>
                       <span className="text-right font-medium tnum">{usd(x.cost)}</span>
                     </div>
                   ))}

@@ -17,8 +17,8 @@ import { cn, tint } from "@/lib/utils";
 const ACCENTS = [{ id: "indigo", hex: "#6366f1" }, { id: "violet", hex: "#8b5cf6" }, { id: "pink", hex: "#ec4899" }, { id: "mint", hex: "#10b981" }, { id: "cyan", hex: "#06b6d4" }, { id: "amber", hex: "#f59e0b" }];
 const BGS = [{ id: "default", label: "Default", sw: "#09090b" }, { id: "pure-black", label: "Pure black", sw: "#000000" }, { id: "navy", label: "Navy", sw: "#0b1222" }];
 const DEFAULT_ACCENT = "violet";
-// Mirrors the defaults used by the tag budget view; real values come from TAG_BUDGETS_JSON.
-const BUDGETS: Record<string, number> = { "2.0": 800, "3.0": 600, Infra: 300, Dev: 150, Shared: 100 };
+// Categories that can carry a monthly budget. The amounts come from the server; none are assumed here.
+const BUDGET_CATEGORIES = ["2.0", "3.0", "Infra", "Dev", "Shared"];
 
 function Section({ id, title, description, children, cardClass, last }: { id?: string; title: string; description: ReactNode; children: ReactNode; cardClass?: string; last?: boolean }) {
   return (
@@ -39,7 +39,6 @@ function KV({ label, children, last }: { label: string; children: ReactNode; las
     </div>
   );
 }
-const Mono = ({ children }: { children: ReactNode }) => <span className="font-mono text-[12px] text-fg-2">{children}</span>;
 
 function Appearance() {
   const { theme, setTheme } = useShell();
@@ -236,7 +235,7 @@ function Secrets() {
       const r = await fetch("/api/settings/secrets/reload", { method: "POST" });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || "Reload failed");
-      toast(`Environment reloaded · ${j.loaded} secrets in secret_store`);
+      toast(`Reloaded ${j.loaded} secrets`);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Reload failed");
     } finally {
@@ -250,10 +249,10 @@ function Secrets() {
     <>
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5 border-0 border-b border-solid border-border px-5 py-3.5">
         <div className="min-w-0 flex-[1_1_260px] text-[12.5px] leading-[1.5] text-muted-foreground">
-          Bootstrap credentials stay in .env: <span className="font-mono text-fg-2">MYSQL_*</span>, <span className="font-mono text-fg-2">NEXTAUTH_SECRET</span>, <span className="font-mono text-fg-2">INFRA_KMS_KEY</span>.
+          Values are never shown. The database login and the encryption key are kept on the server itself and cannot be changed here.
         </div>
         <div className="flex shrink-0 gap-2">
-          <Button size="sm" className="h-8 px-2.5 text-[12.5px]" disabled={busy} onClick={() => void reloadEnv()}><RefreshCw size={12} className="block" />Reload env</Button>
+          <Button size="sm" className="h-8 px-2.5 text-[12.5px]" disabled={busy} onClick={() => void reloadEnv()}><RefreshCw size={12} className="block" />Reload secrets</Button>
           <Button size="sm" className="h-8 px-2.5 text-[12.5px]" onClick={() => { close(); setAdding(true); }}><Plus size={12} className="block" />Add secret</Button>
         </div>
       </div>
@@ -279,7 +278,7 @@ function Secrets() {
           <div key={k.key} className="grid min-h-[52px] grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3.5 px-5 py-1.5 text-[13px] shadow-[0_1px_0_var(--border),1px_0_0_var(--border)]">
             <span className="min-w-0 truncate font-mono text-[12.5px]">{k.key}</span>
             <span className="text-right text-[12px] leading-[1.4]" style={{ color: recent === k.key ? "var(--success)" : "var(--fg-2)" }}>
-              <span className="block">{ago(k.updatedAt)}</span><span className="block text-muted-foreground">{k.updatedBy}</span>
+              <span className="block">{ago(k.updatedAt)}</span><span className="block text-muted-foreground">{k.updatedBy === "seed-script" ? "Initial setup" : k.updatedBy}</span>
             </span>
             <Button size="xs" className="gap-[5px] rounded-[7px] text-[12px]" onClick={() => { close(); setEditing(k.key); }}><RefreshCw size={12} className="block" />Rotate</Button>
           </div>
@@ -289,14 +288,29 @@ function Secrets() {
   );
 }
 
-function Budgets() {
+interface BudgetResp { summary?: { budget?: { budget: number | null } } }
+
+/** Shown only when the server has budgets set; otherwise the whole section is left out. */
+function BudgetSection() {
   const { data } = useJson<{ buckets?: Array<{ category: string; amount: number }> }>("/api/cost/allocation?mode=month");
-  const rows = CATEGORY_META.filter((c) => BUDGETS[c.key]);
+  const [budgets, setBudgets] = useState<Record<string, number>>({});
+  useEffect(() => {
+    let alive = true;
+    Promise.all(BUDGET_CATEGORIES.map((c) => fetch(`/api/cost/by-tag/${encodeURIComponent(c)}`).then((r) => (r.ok ? (r.json() as Promise<BudgetResp>) : null)).catch(() => null)))
+      .then((all) => {
+        const found: Record<string, number> = {};
+        all.forEach((j, i) => { const b = j?.summary?.budget?.budget; if (typeof b === "number" && b > 0) found[BUDGET_CATEGORIES[i]] = b; });
+        if (alive) setBudgets(found);
+      });
+    return () => { alive = false; };
+  }, []);
+  const rows = CATEGORY_META.filter((c) => budgets[c.key]);
+  if (rows.length === 0) return null;
   return (
-    <>
+    <Section title="Categories & budgets" cardClass="px-5 py-1" description="Monthly budget per cost category, set on the server, against spend so far this month.">
       {rows.map((c, i) => {
         const spent = data?.buckets?.find((b) => b.category === c.key)?.amount ?? 0;
-        const budget = BUDGETS[c.key];
+        const budget = budgets[c.key];
         const pct = (spent / budget) * 100;
         const color = pct >= 100 ? "var(--danger)" : pct >= 80 ? "var(--warning)" : c.color;
         return (
@@ -309,7 +323,7 @@ function Budgets() {
           </div>
         );
       })}
-    </>
+    </Section>
   );
 }
 
@@ -323,7 +337,7 @@ export default function Settings() {
     <div data-screen-label="Settings" className="nt-screen flex flex-col">
       <div className="mb-5 max-w-[760px]">
         <h1 className="m-0 text-[26px] font-semibold leading-[1.2] tracking-[-0.025em]">Settings</h1>
-        <p className="mb-0 mt-1.5 text-[14px] leading-[1.5] text-muted-foreground">Profile, appearance, access, secrets, budgets, cron schedule and anomaly thresholds.</p>
+        <p className="mb-0 mt-1.5 text-[14px] leading-[1.5] text-muted-foreground">Profile, appearance, access, secrets, refresh schedule and anomaly detection.</p>
       </div>
       <Section title="Profile" description="Your account and how you sign in." cardClass="px-5 py-1">
         <div className="flex items-center gap-3 border-0 border-b border-solid border-border py-3.5">
@@ -333,34 +347,31 @@ export default function Settings() {
             : <span className="grid h-10 w-10 shrink-0 place-items-center rounded-[10px] bg-brand text-[15px] font-semibold text-white">{(name || "?").charAt(0).toUpperCase()}</span>}
           <div className="min-w-0"><div className="text-[14px] font-semibold">{name}</div><div className="font-mono text-[12px] text-muted-foreground">{email}</div></div>
         </div>
-        <KV label="Session">NextAuth · JWT, 30-day rolling</KV>
+        <KV label="Session">Stays signed in for up to 30 days</KV>
         <KV label="Provider" last>Google Sign-In only</KV>
       </Section>
       <Section title="Appearance" description="These preferences follow your Google account across devices." cardClass="flex flex-col gap-5 px-5 py-[18px]"><Appearance /></Section>
       <Section id="allowed-users" title="Allowed users" description="Google Sign-In is gated by this list. Teammates with an @rw.team Google account can log in immediately — no restart needed." cardClass="overflow-hidden"><AllowedUsers /></Section>
-      <Section id="secrets" title="Secrets" cardClass="overflow-hidden" description={<>Encrypted at rest with AES-256-GCM using <Mono>INFRA_KMS_KEY</Mono>. Everything outside .env lives in <Mono>secret_store</Mono> and can be rotated here.</>}><Secrets /></Section>
-      <Section title="Categories & budgets" cardClass="px-5 py-1" description={<>Configured via <Mono>TAG_BUDGETS_JSON</Mono> in <Mono>/tmp/srv.env</Mono>.</>}><Budgets /></Section>
-      <Section title="Cron schedule" cardClass="px-5 pb-4 pt-1" description={<>Chains <Mono>/api/cron/refresh-all</Mono> (ops) and <Mono>/api/refresh</Mono> (billing). Each call logs independently, so a failure in one no longer skips the other.</>}>
+      <Section id="secrets" title="Secrets" cardClass="overflow-hidden" description="Passwords, keys and tokens for the services Natasha connects to. They are stored encrypted and can be replaced here."><Secrets /></Section>
+      <BudgetSection />
+      <Section title="Refresh schedule" cardClass="px-5 pb-4 pt-1" description="Each scheduled run refreshes operations data, then billing, then certificates. A failure in one step does not stop the others.">
         <KV label="Last run">{ago(ops?.ops.cronLastAt)}</KV>
-        <KV label="Schedule">Twice daily · 00:30 &amp; 12:30 UTC</KV>
-        <div className="mb-3.5 flex flex-wrap justify-between gap-x-4 gap-y-1 border-0 border-b border-solid border-border py-3 text-[13px]"><span className="text-muted-foreground">Script</span><span className="font-mono text-[12.5px]">scripts/cron-refresh.sh</span></div>
+        <div className="mb-3.5 flex flex-wrap justify-between gap-x-4 gap-y-1 border-0 border-b border-solid border-border py-3 text-[13px]"><span className="text-muted-foreground">Schedule</span><span>Twice daily · 00:30 and 12:30 IST</span></div>
         <Button asChild size="sm" className="h-8 text-[12.5px]"><Link href="/cron" className="no-underline">Open cron jobs<ArrowRight size={12} className="block" /></Link></Button>
       </Section>
       <Section title="Anomaly thresholds" description="How cost anomalies are detected and when they alert." cardClass="px-5 py-1">
-        <KV label="Detection">MAD z-score · 14-day baseline</KV>
-        <KV label="Warn threshold"><span className="font-mono text-[12.5px]">z ≥ 2.0</span></KV>
-        <KV label="Critical threshold"><span className="font-mono text-[12.5px]">z ≥ 3.0</span></KV>
-        <KV label="Minimum impact" last>$25 · <span className="font-mono text-[12px]">TELEGRAM_ALERT_MIN_USD</span></KV>
+        <KV label="Detection">Each resource’s daily cost against its own previous 14 days</KV>
+        <KV label="Threshold"><span className="font-mono text-[12.5px]">z ≥ 2.5</span> · well above its usual range</KV>
+        <KV label="Minimum for a Telegram alert" last>$25 spike by default</KV>
       </Section>
       <Section title="Alerts" description="Where notifications are delivered." cardClass="px-5 py-1">
-        <KV label="Anomaly alerts">Telegram · Infra topic 61</KV>
-        <KV label="Cron summary">Silent unless anomalies or CRIT findings</KV>
+        <KV label="Anomaly alerts">Telegram · Infra topic</KV>
+        <KV label="Refresh summary">Sent only for anomalies, new critical findings or a failed source</KV>
         <KV label="Suppression" last>Per repository, with audit trail</KV>
       </Section>
       <Section title="About" description="Build and data handling." cardClass="px-5 py-1" last>
         <KV label="App">Natasha Infra Command Center</KV>
-        <KV label="Stack">Next.js 14 · React 18 · Prisma 5 · MySQL 8.4</KV>
-        <KV label="Data" last>Read-only · every snapshot preserved</KV>
+        <KV label="Data" last>Read-only access to AWS · history of every refresh is kept</KV>
       </Section>
     </div>
   );

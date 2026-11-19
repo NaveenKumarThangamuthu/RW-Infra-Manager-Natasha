@@ -13,7 +13,7 @@ export const NAV: NavGroup[] = [
   ] },
   { group: "Cost", items: [
     { href: "/bill", label: "Billing", icon: Receipt },
-    { href: "/tag", label: "Categories", icon: Layers, badge: "60" },
+    { href: "/tag", label: "Categories", icon: Layers },
     { href: "/data-transfer", label: "Data Transfer", icon: Shuffle },
     { href: "/regions", label: "Regions", icon: Globe },
   ] },

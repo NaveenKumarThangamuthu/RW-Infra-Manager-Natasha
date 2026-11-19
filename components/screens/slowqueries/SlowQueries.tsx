@@ -14,19 +14,24 @@ import { DbQueries } from "./DbQueries";
 import { LogTrouble } from "./LogTrouble";
 import { SampleSheet } from "./SampleSheet";
 import { SlowOps } from "./SlowOps";
-import { latencyColor, ms, RANGE_LABEL, RANGE_OPTIONS, SEVERITY_COLOR, type LogsResp, type Range, type SampleTarget } from "./types";
+import { KIND_HINT, latencyColor, ms, RANGE_LABEL, RANGE_OPTIONS, SEVERITY_COLOR, type LogsResp, type Range, type SampleTarget } from "./types";
+
+/** Kinds that already have their own KPI card. */
+const CARD_KINDS = ["sqlFailed", "deadlock", "lockWait"];
+/** Under this many rows, timed operations are shown inside the Service logs tab instead of a tab of their own. */
+const OPS_TAB_MIN = 3;
 
 type Tab = "logs" | "ops" | "db";
 const isRange = (v: string | null): v is Range => v === "1h" || v === "6h" || v === "24h";
 
 function Notes({ notes }: { notes: LogsResp["notes"] }) {
   if (!notes.length) {
-    return <Banner tone="var(--success)"><Dot color="var(--success)" size={7} />No rule-based findings for this window.</Banner>;
+    return <Banner tone="var(--success)"><Dot color="var(--success)" size={7} />No likely causes found for this window.</Banner>;
   }
   return (
     <Banner tone={SEVERITY_COLOR[notes[0].severity]} className="items-start py-3">
       <div className="flex w-full flex-col gap-2.5">
-        <div className="text-[12px] font-medium text-muted-foreground">Likely causes · rule-based, from the counts and samples below</div>
+        <div className="text-[12px] font-medium text-muted-foreground">Likely causes · worked out from the counts and samples below</div>
         {notes.map((n, i) => (
           <div key={i} className="flex items-start gap-2.5">
             <Dot color={SEVERITY_COLOR[n.severity]} size={7} className="mt-[6px]" />
@@ -47,7 +52,9 @@ function Kpis({ data }: { data: LogsResp }) {
   const partial = (...keys: string[]) => keys.some((key) => k[key]?.partial) ? <Badge size="xs" tone="var(--warning)">partial</Badge> : undefined;
   const failed = k.sqlFailed?.total ?? 0;
   const dead = k.deadlock?.total ?? 0, wait = k.lockWait?.total ?? 0;
-  const timeouts = k.readTimeout?.total ?? 0;
+  // The third card is the largest kind that has no card of its own, so the biggest problem is never missing from this row.
+  const top = data.kinds.filter((x) => !CARD_KINDS.includes(x.key)).sort((a, b) => b.total - a.total)[0];
+  const topColor = !top?.total ? "var(--success)" : top.key === "readTimeout" ? "var(--info)" : "var(--danger)";
   const slowest = data.operations.rows[0];
   const bad = (n: number) => (n > 0 ? "var(--danger)" : "var(--success)");
   return (
@@ -55,9 +62,10 @@ function Kpis({ data }: { data: LogsResp }) {
       <Kpi label="Failed SQL statements" value={num(failed)} valueColor={bad(failed)} badge={partial("sqlFailed")} footer={RANGE_LABEL[data.range]} />
       <Kpi label="Lock contention" value={num(dead + wait)} valueColor={dead + wait ? "var(--warning)" : "var(--success)"} badge={partial("deadlock", "lockWait")}
         footer={`${num(dead)} deadlock${dead === 1 ? "" : "s"} · ${num(wait)} lock wait${wait === 1 ? "" : "s"}`} />
-      <Kpi label="Service call timeouts" value={num(timeouts)} valueColor={timeouts ? "var(--info)" : "var(--success)"} badge={partial("readTimeout")} footer="HTTP calls between services" />
+      <Kpi label={top?.total ? top.label : "Service call timeouts"} value={num(top?.total ?? 0)} valueColor={topColor} badge={top ? partial(top.key) : undefined}
+        footer={<span className="line-clamp-2">{top?.total ? (KIND_HINT[top.key] ?? `Log lines in the ${RANGE_LABEL[data.range]}`) : "HTTP calls between services"}</span>} />
       <Kpi label="Slowest operation p95" value={slowest ? ms(slowest.p95) : "—"} valueColor={slowest ? latencyColor(slowest.p95) : undefined}
-        footer={<span className="block truncate" title={slowest?.operation}>{slowest ? slowest.operation : "No timing lines sampled"}</span>} />
+        footer={<span className="line-clamp-2 break-words" title={slowest?.operation}>{slowest ? slowest.operation : "No timing lines sampled"}</span>} />
     </KpiGrid>
   );
 }
@@ -83,7 +91,7 @@ function Inner() {
 
   const header = (
     <PageHeader maxWidth={800} title="Slow queries"
-      description="Database trouble from two sources: failed statements, lock contention, MongoDB and service-call timeouts found in the Spring service logs (DEV ELK), and statement statistics from MySQL performance_schema."
+      description="Database trouble from two sources: failed statements, lock contention, MongoDB and service-call timeouts found in the application logs, and MySQL statement statistics."
       actions={
         <div className="flex flex-wrap items-center gap-2">
           <Segmented size="md" value={range} onChange={setRange} aria-label="Time range" options={RANGE_OPTIONS.map((r) => ({ value: r, label: r }))} />
@@ -97,30 +105,34 @@ function Inner() {
   if (!data && !logs.error) return <ScreenSkeleton kpis={4} />;
 
   const grand = data ? data.kinds.reduce((n, k) => n + k.total, 0) : null;
+  const opsCount = data?.operations.rows.length ?? 0;
+  const opsTab = !data || opsCount >= OPS_TAB_MIN;
+  const shown: Tab = tab === "ops" && !opsTab ? "logs" : tab;
   return (
     <Screen label="Slow queries">
       {header}
       {logs.error && <ErrorNote message={`Service logs unavailable: ${logs.error}`} onRetry={logs.reload} />}
-      {data?.via === "public" && <Banner tone="var(--warning)">Using the public ELK endpoint — the LAN URL is unreachable, so logs come from the slower route.</Banner>}
+      {data?.via === "public" && <Banner tone="var(--warning)">Using the public log endpoint: the internal one is unreachable, so logs come from the slower route.</Banner>}
       {data && <Kpis data={data} />}
       {data && <Notes notes={data.notes} />}
       <div className="flex flex-wrap items-center gap-2.5">
-        <Segmented size="md" value={tab} onChange={setTab} aria-label="Section" options={[
-          { value: "logs", label: "Service logs", count: grand != null ? num(grand) : undefined },
-          { value: "ops", label: "Timed operations", count: data ? data.operations.rows.length : undefined },
-          { value: "db", label: "Database" },
+        <Segmented size="md" value={shown} onChange={setTab} aria-label="Section" options={[
+          { value: "logs" as Tab, label: "Service logs", count: grand != null ? num(grand) : undefined },
+          ...(opsTab ? [{ value: "ops" as Tab, label: "Timed operations", count: data ? opsCount : undefined }] : []),
+          { value: "db" as Tab, label: "Database" },
         ]} />
-        {data && tab !== "db" && (
+        {data && shown !== "db" && (
           <span className="ml-auto flex flex-wrap items-center gap-2">
-            <Badge size="md" tone="var(--success)"><Clock size={12} className="block" />ELK logs {ago(data.fetchedAt)}</Badge>
+            <Badge size="md" tone="var(--success)"><Clock size={12} className="block" />Logs {ago(data.fetchedAt)}</Badge>
             {data.cached && <Badge size="md">cached</Badge>}
           </span>
         )}
       </div>
-      {tab === "logs" && data && <LogTrouble data={data} onOpen={setTarget} />}
-      {tab === "ops" && data && <SlowOps data={data} />}
-      {tab !== "db" && !data && logs.error && <div className="text-[13px] text-muted-foreground">The Database tab does not depend on the logs and still works.</div>}
-      {tab === "db" && <DbQueries />}
+      {shown === "logs" && data && <LogTrouble data={data} onOpen={setTarget} />}
+      {shown === "logs" && data && !opsTab && opsCount > 0 && <SlowOps data={data} />}
+      {shown === "ops" && data && <SlowOps data={data} />}
+      {shown !== "db" && !data && logs.error && <div className="text-[13px] text-muted-foreground">The Database tab does not depend on the logs and still works.</div>}
+      {shown === "db" && <DbQueries />}
       <SampleSheet target={target} range={range} kinds={data?.kinds ?? []} onClose={() => setTarget(null)} />
     </Screen>
   );

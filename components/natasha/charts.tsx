@@ -42,13 +42,19 @@ export function monotonePath(p: Array<[number, number]>): string {
   return d;
 }
 
-export interface ChartSeries { name: string; color: string; values: number[] }
+export interface ChartSeries {
+  name: string; color: string; values: number[];
+  /** Draw this line dashed, so a series lying on top of another stays visible. */
+  dashed?: boolean;
+  /** Stroke width for this line only; defaults to the chart's strokeWidth. */
+  width?: number;
+}
 
 const VIEW_W = 1000;
 
 export function TimeChart({
   labels, full, series, height = 240, area, ticks = 7, axisWidth = 44, yTicks = 4,
-  fmt = usd, axisFmt = axisUsd, extra, empty = "Select a category to plot.", strokeWidth = 2, zero = true,
+  fmt = usd, axisFmt = axisUsd, extra, empty = "Select a category to plot.", strokeWidth = 2, zero = true, smooth = true, uniqueTicks = false,
 }: {
   labels: string[];
   full?: string[];
@@ -65,6 +71,10 @@ export function TimeChart({
   strokeWidth?: number;
   /** Include zero on the Y axis; turn off for metrics that sit far from it. */
   zero?: boolean;
+  /** Curved line (default). Turn off for counts per bucket, where a curve suggests a gradual change. */
+  smooth?: boolean;
+  /** Skip an X-axis label that repeats the one before it (for example the same day twice). */
+  uniqueTicks?: boolean;
 }) {
   const id = useId();
   const [hover, setHover] = useState<number | null>(null);
@@ -81,7 +91,13 @@ export function TimeChart({
   const every = Math.max(1, Math.ceil(n / ticks));
   const xl: number[] = [];
   for (let i = 0; i < n; i += every) xl.push(i);
-  if (n > 1 && n - 1 - xl[xl.length - 1] >= every / 2) xl.push(n - 1);
+  // Always end on the last point when it is at least half a step away. The tick before it is
+  // dropped rather than kept, otherwise the last two labels sit half a step apart and collide.
+  if (n > 1 && n - 1 - xl[xl.length - 1] >= every / 2) {
+    if (xl.length > 1) xl.pop();
+    xl.push(n - 1);
+  }
+  const shownTicks = uniqueTicks ? xl.filter((i, k) => k === 0 || labels[i] !== labels[xl[k - 1]]) : xl;
   const base = Y(Math.max(sc.min, 0));
   const hv = hover != null && hover < n ? hover : null;
 
@@ -108,12 +124,13 @@ export function TimeChart({
                 style={{ stroke: t === 0 ? "var(--border-strong)" : "var(--grid)", strokeWidth: 1 }} />
             ))}
             {series.map((s, i) => {
-              const d = monotonePath(s.values.map((v, j) => [X(j), Y(v)]));
+              const pts = s.values.map((v, j): [number, number] => [X(j), Y(v)]);
+              const d = smooth ? monotonePath(pts) : pts.map(([x, y], j) => `${j ? "L" : "M"}${x},${y}`).join("");
               return (
                 <g key={s.name}>
                   {area && <path d={`${d}L${VIEW_W},${base}L0,${base}Z`} style={{ fill: `url(#${id}-${i})` }} />}
                   <path d={d} vectorEffect="non-scaling-stroke"
-                    style={{ fill: "none", stroke: s.color, strokeWidth, strokeLinejoin: "round", strokeLinecap: "round" }} />
+                    style={{ fill: "none", stroke: s.color, strokeWidth: s.width ?? strokeWidth, strokeDasharray: s.dashed ? "5 4" : undefined, strokeLinejoin: "round", strokeLinecap: s.dashed ? "butt" : "round" }} />
                 </g>
               );
             })}
@@ -145,7 +162,7 @@ export function TimeChart({
             onMouseLeave={() => setHover(null)} />
         </div>
         <div className="relative mt-2 h-4">
-          {xl.map((i) => (
+          {shownTicks.map((i) => (
             <div key={i} className="absolute whitespace-nowrap text-[11px] text-muted-foreground"
               style={{ left: pct(i), transform: i === 0 ? "none" : i === n - 1 ? "translateX(-100%)" : "translateX(-50%)" }}>
               {labels[i]}

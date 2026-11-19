@@ -29,7 +29,7 @@ const SOURCE_LABEL: Record<string, string> = {
 const FRESH_LABEL: Record<string, string> = { "ec2-health": "EC2", "ec2-volumes": "Volumes", "cloudwatch-alarms": "CloudWatch", "prom-alerts": "Prometheus", "lambda-ohio": "Lambda" };
 // The host crontab runs in host local time (IST), so the UTC hours below are 00:30 and 12:30 IST.
 const CRON_SCHEDULE = [{ h: 7, m: 0, ist: "12:30 IST", utc: "07:00 UTC" }, { h: 19, m: 0, ist: "00:30 IST", utc: "19:00 UTC" }];
-const JOB_COLS = "minmax(220px,1.4fr) 130px minmax(180px,1fr) 90px 170px 70px 76px";
+const JOB_COLS = "minmax(180px,1.2fr) minmax(220px,1.4fr) 100px 190px 80px 76px";
 const HIST_COLS = "150px 110px minmax(160px,1fr) 90px 110px";
 const HEAD = "grid h-[38px] items-center gap-3.5 border-0 border-y border-solid border-border bg-card-2 px-5 text-[12px] font-medium text-muted-foreground";
 const CRONTAB = `# Natasha refresh · twice daily, host local time (IST)
@@ -40,6 +40,12 @@ const CRONTAB = `# Natasha refresh · twice daily, host local time (IST)
 curl -X POST -H "Authorization: Bearer $CRON_SECRET" "$BASE/api/cron/refresh-all?label=$LABEL"
 curl -X POST -H "Authorization: Bearer $CRON_SECRET" "$BASE/api/refresh?label=$LABEL"
 curl -X POST -H "Authorization: Bearer $CRON_SECRET" "$BASE/api/certificates/refresh?label=$LABEL"`;
+
+const RUN_LABEL: Record<string, string> = { "0030-utc-06ist": "00:30 IST run", "1230-utc-18ist": "12:30 IST run" };
+/** The host passes historical labels such as "0030-utc-06ist"; show what they mean. */
+const runLabel = (label: string | null | undefined) => (label ? RUN_LABEL[label] ?? (/^manual/i.test(label) ? "Manual run" : label) : "Manual run");
+/** A short reason for a failed source. The raw error names the AWS account, so it is never shown. */
+const failReason = (error: string | null) => (/denied|not authorized|unauthori[sz]ed|forbidden/i.test(error ?? "") ? "AWS permission denied" : /timed? ?out|ECONN|ENOTFOUND|network/i.test(error ?? "") ? "Could not reach the service" : null);
 
 function nextRun() {
   const now = new Date();
@@ -87,7 +93,7 @@ export default function CronJobs() {
   const runNow = () => void refresh();
   const header = (
     <PageHeader title="Cron jobs"
-      description={<>Scheduled refreshes that keep every snapshot current. The host crontab runs <span className="font-mono text-[13px] text-fg-2">scripts/cron-refresh.sh</span> twice daily at 00:30 and 12:30 IST (19:00 and 07:00 UTC).</>}
+      description="Scheduled refreshes that keep every page current. They run twice daily at 00:30 and 12:30 IST (19:00 and 07:00 UTC)."
       actions={<>
         <Button size="lg" onClick={() => setShowCrontab((v) => !v)}><Terminal size={14} className="block" />{showCrontab ? "Hide crontab" : "View crontab"}</Button>
         <Button variant="primary" size="lg" className={cn("px-3.5", refreshing && "opacity-70")} disabled={refreshing} onClick={runNow}>
@@ -107,6 +113,7 @@ export default function CronJobs() {
   const allOk = failing.length === 0;
   const runColor = refreshing ? "var(--info)" : allOk ? "var(--success)" : "var(--warning)";
   const crit = summary?.github.findings.CRIT ?? 0;
+  const certOverdue = isStale(data.lastCertificateCheck);
 
   return (
     <Screen label="Cron jobs">
@@ -123,11 +130,11 @@ export default function CronJobs() {
         </Card>
       )}
       <KpiGrid>
-        <Kpi label="Last run" value={ago(latest?.startedAt)} footer={<span className="font-mono">{latest?.label ?? "No cron runs yet"}</span>} />
+        <Kpi label="Last run" value={ago(latest?.startedAt)} footer={latest ? runLabel(latest.label) : "No scheduled runs yet"} />
         <Kpi label="Next run" value={next.label} footer={next.sub} />
         <Kpi label="Healthy sources" valueColor={allOk ? "var(--success)" : "var(--warning)"}
           value={<>{healthy.length}<span className="text-[15px] font-medium tracking-normal text-muted-foreground"> / {sources.length}</span></>}
-          footer={allOk ? "All sources refreshing" : `${failing.map((s) => s.source).join(" and ")} failing`} />
+          footer={allOk ? "All sources refreshing" : `${failing.map((s) => SOURCE_LABEL[s.source] ?? s.source).join(" and ")} failing`} />
         <Kpi label="Run duration" value={seconds(latest?.durationMs)} footer={avgDur != null ? `Average ${seconds(avgDur)} over the last ${data.runs.length} runs` : "No runs yet"} />
       </KpiGrid>
       <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,440px),1fr))] items-start gap-4">
@@ -135,27 +142,27 @@ export default function CronJobs() {
           <div className="flex flex-wrap items-start justify-between gap-3 border-0 border-b border-solid border-border px-5 py-4">
             <div>
               <h3 className="m-0 text-[15px] font-semibold tracking-[-0.01em]">Ops refresh pipeline</h3>
-              <div className="mt-[3px] text-[13px] text-muted-foreground">{refreshing ? "Manual run in progress" : latest ? `Latest run ${latest.label} · started ${ago(latest.startedAt)} · ${seconds(latest.durationMs)}` : "No runs recorded yet"}</div>
+              <div className="mt-[3px] text-[13px] text-muted-foreground">{refreshing ? "Manual run in progress" : latest ? `Latest: ${runLabel(latest.label)} · started ${ago(latest.startedAt)} · ${seconds(latest.durationMs)}` : "No runs recorded yet"}</div>
             </div>
             <Badge size="md" tone={runColor}>{refreshing ? "Running" : allOk ? `Success · ${healthy.length} of ${sources.length}` : `Partial · ${healthy.length} of ${sources.length}`}</Badge>
           </div>
-          <div className="px-5 pb-1 pt-3 text-[11.5px] font-medium text-subtle">Snapshots · run in parallel</div>
+          <div className="px-5 pb-1 pt-3 text-[11.5px] font-medium text-subtle">Data sources · refreshed in parallel</div>
           {sources.map((s) => (
-            <Step key={s.source} tone={refreshing ? "busy" : s.status === "success" ? "ok" : s.status === "failed" ? "fail" : "none"} name={SOURCE_LABEL[s.source] ?? s.source} tag={s.source}
-              detail={refreshing ? "Running…" : s.status === "failed" ? `Failed · last good ${ago(s.lastGoodAt)}` : s.status ? seconds(s.fetchMs) : "Never run"}
+            <Step key={s.source} tone={refreshing ? "busy" : s.status === "success" ? "ok" : s.status === "failed" ? "fail" : "none"} name={SOURCE_LABEL[s.source] ?? s.source}
+              detail={refreshing ? "Running…" : s.status === "failed" ? `Failed${failReason(s.error) ? ` · ${failReason(s.error)}` : ""} · last good ${ago(s.lastGoodAt)}` : s.status ? seconds(s.fetchMs) : "Never run"}
               detailColor={refreshing ? "var(--info)" : s.status === "failed" ? "var(--danger)" : undefined} />
           ))}
-          <div className="mt-1.5 border-0 border-t border-solid border-border px-5 pb-1 pt-3 text-[11.5px] font-medium text-subtle">After snapshots</div>
+          <div className="mt-1.5 border-0 border-t border-solid border-border px-5 pb-1 pt-3 text-[11.5px] font-medium text-subtle">After the refresh</div>
           <Step tone={isStale(data.repos.lastSyncedAt) ? "none" : "ok"} name="GitHub repo sync" detail={`${num(data.repos.count)} repos · synced ${ago(data.repos.lastSyncedAt)}`} />
-          <Step tone={anomalies ? "ok" : "none"} name="Cost anomaly scan" detail={anomalies ? `MAD z ≥ 2.5 · ${anomalies.anomalies.length} anomalies` : "—"} />
-          <Step tone={summary ? "ok" : "none"} name="CRIT / HIGH findings" detail={summary ? `${num(crit)} CRIT · ${num(summary.github.findings.HIGH)} HIGH open` : "—"} />
-          <Step tone="none" name="Telegram cron summary" detail="When configured" />
+          <Step tone={anomalies ? "ok" : "none"} name="Cost anomaly scan" detail={anomalies ? `${num(anomalies.anomalies.length)} ${anomalies.anomalies.length === 1 ? "anomaly" : "anomalies"} found` : "—"} />
+          <Step tone={summary ? "ok" : "none"} name="Critical and high findings" detail={summary ? `${num(crit)} critical · ${num(summary.github.findings.HIGH)} high open` : "—"} />
+          <Step tone="none" name="Telegram summary" detail="Sent only when there is something to report" />
           <div className="h-2.5" />
         </Card>
         <Card className="overflow-hidden">
           <div className="border-0 border-b border-solid border-border px-5 py-4">
             <h3 className="m-0 text-[15px] font-semibold tracking-[-0.01em]">Snapshot freshness</h3>
-            <div className="mt-[3px] text-[13px] text-muted-foreground">Age of the newest good snapshot per source</div>
+            <div className="mt-[3px] text-[13px] text-muted-foreground">Age of the newest good data per source</div>
           </div>
           <div className="flex flex-col pb-2 pt-1">
             {sources.map((s) => {
@@ -171,33 +178,27 @@ export default function CronJobs() {
                 </div>
               );
             })}
-            <div className="flex min-h-[46px] items-center gap-3 px-5 py-1.5">
-              <Dot color="var(--muted-fg)" size={8} />
-              <div className="min-w-0 flex-1"><div className="text-[13px] font-medium">Billing backfill</div><div className="mt-px text-[12px] text-muted-foreground">One-time job</div></div>
-              <span className="text-[14px] font-semibold tnum">{ago(data.lastBackfill?.startedAt).replace(" ago", "")}</span>
-            </div>
           </div>
         </Card>
       </div>
       <Card className="overflow-hidden">
         <div className="px-5 py-4">
           <h3 className="m-0 text-[15px] font-semibold tracking-[-0.01em]">Schedules</h3>
-          <div className="mt-[3px] text-[13px] text-muted-foreground">Every endpoint the crontab calls, authenticated with CRON_SECRET</div>
+          <div className="mt-[3px] text-[13px] text-muted-foreground">What runs on the schedule and how the last run went</div>
         </div>
         <div className="overflow-x-auto">
-          <div className="min-w-[980px]">
-            <div className={HEAD} style={{ gridTemplateColumns: JOB_COLS }}><span>Job</span><span>Schedule</span><span>Cadence</span><span>Last run</span><span>Result</span><span className="text-right">Duration</span><span /></div>
+          <div className="min-w-[940px]">
+            <div className={HEAD} style={{ gridTemplateColumns: JOB_COLS }}><span>Job</span><span>Schedule</span><span>Last run</span><span>Result</span><span className="text-right">Duration</span><span /></div>
             {[
-              { name: "Ops refresh", ep: "POST /api/cron/refresh-all", cron: "30 0,12 * * *", cadence: "Twice daily · 00:30 & 12:30 IST", last: latest?.startedAt, status: allOk ? "Success" : "Partial", note: `${healthy.length} of ${sources.length} snapshots`, dur: seconds(latest?.durationMs), bad: !allOk, run: runNow },
-              { name: "Billing refresh", ep: "POST /api/refresh?label=…", cron: "30 0,12 * * *", cadence: "Chained after ops refresh", last: data.lastBilling?.startedAt, status: data.lastBilling?.status === "error" ? "Failed" : "Success", note: "Cost Explorer snapshot", dur: between(data.lastBilling?.startedAt, data.lastBilling?.finishedAt), bad: data.lastBilling?.status === "error" },
-              { name: "Certificate scan", ep: "POST /api/certificates/refresh", cron: "30 0,12 * * *", cadence: "Twice daily", last: data.lastCertificateCheck, status: "Success", note: "AS2 certificates checked", dur: "—" },
-              { name: "Billing backfill", ep: "POST /api/backfill", cron: "manual", cadence: "One-time · 3-year monthly backfill", last: data.lastBackfill?.startedAt, status: data.lastBackfill ? "Completed" : "Not run", note: "Idempotent · ?force=1 re-runs", dur: between(data.lastBackfill?.startedAt, data.lastBackfill?.finishedAt) },
+              { name: "Ops refresh", cadence: "Twice daily · 00:30 and 12:30 IST", last: latest?.startedAt, status: allOk ? "Success" : "Partial", note: `${healthy.length} of ${sources.length} sources refreshed`, dur: seconds(latest?.durationMs), bad: !allOk, run: runNow },
+              { name: "Billing refresh", cadence: "Twice daily · right after the ops refresh", last: data.lastBilling?.startedAt, status: data.lastBilling?.status === "error" ? "Failed" : data.lastBilling ? "Success" : "Not run", note: "Cost figures from AWS", dur: between(data.lastBilling?.startedAt, data.lastBilling?.finishedAt), bad: data.lastBilling?.status === "error", idle: !data.lastBilling },
+              { name: "Certificate check", cadence: "Twice daily · after the billing refresh", last: data.lastCertificateCheck, status: !data.lastCertificateCheck ? "Not run" : certOverdue ? "Overdue" : "Success", note: "AS2 certificate expiry dates", dur: "—", bad: certOverdue, idle: !data.lastCertificateCheck },
+              { name: "Billing history load", cadence: "One-time · three years of monthly costs", last: data.lastBackfill?.startedAt, status: data.lastBackfill ? "Completed" : "Not run", note: "Loads past months once", dur: between(data.lastBackfill?.startedAt, data.lastBackfill?.finishedAt), idle: !data.lastBackfill },
             ].map((j) => {
-              const c = j.bad ? "var(--warning)" : "var(--success)";
+              const c = j.bad ? "var(--warning)" : j.idle ? "var(--muted-fg)" : "var(--success)";
               return (
                 <div key={j.name} className="grid min-h-14 items-center gap-3.5 border-0 border-b border-solid border-border px-5 py-1.5 text-[13px] hover:bg-hover" style={{ gridTemplateColumns: JOB_COLS }}>
-                  <div className="min-w-0"><div className="font-medium">{j.name}</div><div className="mt-0.5 truncate font-mono text-[11.5px] text-muted-foreground">{j.ep}</div></div>
-                  <span className="font-mono text-[12px] text-fg-2">{j.cron}</span>
+                  <div className="min-w-0 font-medium">{j.name}</div>
                   <span className="text-[12.5px] text-fg-2">{j.cadence}</span>
                   <span className="text-[12.5px] text-fg-2">{ago(j.last)}</span>
                   <div className="flex flex-col items-start gap-[3px]">
@@ -205,8 +206,8 @@ export default function CronJobs() {
                     <span className="text-[11.5px] text-muted-foreground">{j.note}</span>
                   </div>
                   <span className="text-right text-[12.5px] text-fg-2 tnum">{j.dur}</span>
-                  {/* Only the ops refresh has a session-authenticated route; the others accept CRON_SECRET from the host alone. */}
-                  <Button size="xs" className="justify-self-end rounded-[7px] gap-[5px]" disabled={!j.run || refreshing} title={j.run ? "Run now" : "Runs from the host crontab with CRON_SECRET"} onClick={j.run}><Play size={12} className="block" />Run</Button>
+                  {/* Only the ops refresh can be started from the browser; the others run from the server schedule alone. */}
+                  {j.run ? <Button size="xs" className="justify-self-end rounded-[7px] gap-[5px]" disabled={refreshing} title="Run now" onClick={j.run}><Play size={12} className="block" />Run</Button> : <span />}
                 </div>
               );
             })}
@@ -220,12 +221,12 @@ export default function CronJobs() {
         </div>
         <div className="overflow-x-auto">
           <div className="min-w-[720px]">
-            <div className={HEAD} style={{ gridTemplateColumns: HIST_COLS }}><span>Label</span><span>Started</span><span>Snapshots</span><span className="text-right">Duration</span><span>Result</span></div>
+            <div className={HEAD} style={{ gridTemplateColumns: HIST_COLS }}><span>Run</span><span>Started</span><span>Sources</span><span className="text-right">Duration</span><span>Result</span></div>
             {data.runs.map((h, i) => {
               const ok = h.ok === h.total, c = ok ? "var(--success)" : "var(--warning)";
               return (
                 <div key={`${h.label}-${i}`} className="grid min-h-11 items-center gap-3.5 border-0 border-b border-solid border-border px-5 text-[13px] hover:bg-hover" style={{ gridTemplateColumns: HIST_COLS }}>
-                  <span className="font-mono text-[12px]">{h.label}</span>
+                  <span className="text-[12.5px]">{runLabel(h.label)}</span>
                   <span className="text-[12.5px] text-fg-2">{ago(h.startedAt)}</span>
                   <div className="flex items-center gap-2.5">
                     <span className="flex gap-0.5">{Array.from({ length: h.total }, (_, d) => <span key={d} className="h-3.5 w-2 rounded-[2px]" style={{ background: d < h.ok ? "var(--success)" : "var(--danger)" }} />)}</span>
@@ -236,7 +237,7 @@ export default function CronJobs() {
                 </div>
               );
             })}
-            {data.runs.length === 0 && <div className="px-5 py-8 text-center text-[13px] text-muted-foreground">No cron runs recorded yet.</div>}
+            {data.runs.length === 0 && <div className="px-5 py-8 text-center text-[13px] text-muted-foreground">No scheduled runs recorded yet.</div>}
           </div>
         </div>
       </Card>

@@ -19,6 +19,8 @@ const FLAG_COLOR: Record<string, string> = { "deep paging": "var(--danger)", "he
 function Scroll({ min, children }: { min: number; children: ReactNode }) {
   return <div className="overflow-x-auto"><div style={{ minWidth: min }}>{children}</div></div>;
 }
+/** "10000+ hits" → "10,000+ hits" */
+const hits = (s: string | null) => (s ? s.replace(/\d{4,}/g, (d) => num(Number(d))) : "—");
 const istTime = (iso: string) => { const p = istParts(new Date(iso).getTime()); return `${p.dd}, ${p.hm}`; };
 
 function PatternSheet({ shape, onClose }: { shape: SlowShape | null; onClose: () => void }) {
@@ -62,7 +64,7 @@ export function SlowLogTables({ d }: { d: SlowLogOk }) {
       <Card className="overflow-hidden">
         <CardHeader className="pb-3" title="By index" description={anySampled ? "Counts are exact. Timings marked * come from the slowest sampled searches." : "Exact counts and timings for the window."} />
         <Scroll min={620}>
-          <HeadRow columns={IDX_COLS}><span>Index</span><span className="text-right">Searches</span><span>Share</span><span className="text-right">p95</span><span className="text-right">Slowest</span></HeadRow>
+          <HeadRow columns={IDX_COLS}><span>Index</span><span className="text-right">Searches</span><span>Share</span><span className="text-right">Slow (p95)</span><span className="text-right">Slowest</span></HeadRow>
           {d.byIndex.map((b) => (
             <div key={b.index} className={ROW} style={{ gridTemplateColumns: IDX_COLS }}>
               <span className="truncate font-mono text-[12.5px]" title={b.index}>{b.index}</span>
@@ -104,7 +106,7 @@ export function SlowLogTables({ d }: { d: SlowLogOk }) {
               <span className="tnum text-fg-2">{istTime(r.at)}</span>
               <span className="truncate font-mono text-[12.5px]">{r.index}</span>
               <span className="text-right font-semibold tnum">{dur(r.tookMs)}</span>
-              <span className="truncate text-[12.5px] text-fg-2">{r.totalHits ?? "—"}</span>
+              <span className="truncate text-[12.5px] text-fg-2 tnum">{hits(r.totalHits)}</span>
               <span className="text-[12px] font-semibold" style={{ color: LEVEL_COLOR[r.level ?? ""] ?? "var(--muted-fg)" }}>{r.level ?? "—"}</span>
             </div>
           ))}

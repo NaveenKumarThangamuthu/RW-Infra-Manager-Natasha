@@ -6,7 +6,8 @@
 // filter controls and no pagination — every finding is laid out statically so
 // the PDF is self-contained and complete on paper.
 //
-// Usage: node gen-vuln-pdf.mjs <findings.ndjson> <out.pdf> [out.print.html]
+// Usage: node gen-vuln-pdf.mjs <findings.ndjson> <out.pdf> [out.print.html] [--html-only]
+// Reads scan coverage from the VULN_REPORT_META environment variable when set.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -21,14 +22,46 @@ if (!inPath || !outPdf) {
 }
 const outHtml = outHtmlArg || outPdf.replace(/\.pdf$/, "") + ".print.html";
 
-const rows = fs.readFileSync(inPath, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+// This edition is a CVE assessment: its headline, cover and tables all speak of
+// known vulnerabilities from Trivy. Pattern-matched secrets belong to the web
+// report, so any that arrive in the input are left out rather than counted as CVEs.
+const inputRows = fs.readFileSync(inPath, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+const rows = inputRows.filter((r) => r.cat === "CVE");
+if (rows.length !== inputRows.length) {
+  console.log(`  note: left out ${inputRows.length - rows.length} non-CVE rows (this edition covers CVEs only)`);
+}
 
 const SEV_ORDER = ["CRIT", "HIGH", "MED", "LOW", "INFO"];
 const SEV_LABEL = { CRIT: "Critical", HIGH: "High", MED: "Medium", LOW: "Low", INFO: "Info" };
 
-const platformOf = (repo) => (/mule/i.test(repo) ? "Mule" : "Spring");
-const platformRank = (repo) => (platformOf(repo) === "Mule" ? 1 : 0);
+// Stack split. Names carrying "Mule" are MuleSoft. Of the rest, only JVM-language
+// repositories are Spring; everything else (React, Vue, Next.js, Python, scripts)
+// is "Frontend / Other" rather than being mislabelled Spring. The language comes
+// from the export (`lang`); an older export without it falls back to a name check.
+const PLAT_ORDER = ["Spring", "Other", "Mule"];
+const PLAT_LABEL = { Spring: "Spring", Other: "Frontend / Other", Mule: "Mule" };
+const JVM_LANGS = new Set(["java", "kotlin", "groovy", "scala"]);
+const NON_SPRING_NAME = /react|vue|angular|next|frontend|front-end|theme|dashboard|shopify|natasha|-ui\b|-web\b/i;
+const repoLang = new Map();
+for (const r of rows) if (r.lang !== undefined && !repoLang.has(r.repo)) repoLang.set(r.repo, r.lang);
+const platformOf = (repo) => {
+  if (/mule/i.test(repo)) return "Mule";
+  if (!repoLang.has(repo)) return NON_SPRING_NAME.test(repo) ? "Other" : "Spring";
+  const lang = repoLang.get(repo);
+  return lang && JVM_LANGS.has(String(lang).toLowerCase()) ? "Spring" : "Other";
+};
+const platformRank = (repo) => PLAT_ORDER.indexOf(platformOf(repo));
 for (const r of rows) r.plat = platformOf(r.repo);
+
+// One number style and one date style for the whole report.
+const fmt = (n) => Number(n || 0).toLocaleString("en-GB");
+const fmtDate = (ymd) => {
+  const d = new Date(`${String(ymd).slice(0, 10)}T00:00:00Z`);
+  return Number.isNaN(d.getTime())
+    ? String(ymd)
+    : d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+};
+const plural = (n, one, many) => (Number(n) === 1 ? one : many);
 
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -37,9 +70,17 @@ const bySev = Object.fromEntries(SEV_ORDER.map((s) => [s, rows.filter((r) => r.s
 const pct = (n) => (rows.length ? ((n / rows.length) * 100).toFixed(1) : "0.0");
 const distinctCves = new Set(rows.filter((r) => r.cat === "CVE").map((r) => r.rule)).size;
 
+// Scan-coverage context from refresh-vuln-report.sh (built from logs/rescan-all-state.json):
+//   { date, targets, scanned, failed, skipped,
+//     notScanned: [{ repo, branch, status, reason }], notOnGithub: [name] }
 const meta = process.env.VULN_REPORT_META ? JSON.parse(process.env.VULN_REPORT_META) : null;
+const notScanned = meta && Array.isArray(meta.notScanned) ? meta.notScanned : [];
+const notOnGithub = meta && Array.isArray(meta.notOnGithub) ? meta.notOnGithub : [];
 const scanDate = [...new Set(rows.map((r) => r.seen))].sort().pop() || "unknown";
-const generated = new Date().toLocaleString("en-GB", { timeZone: "Asia/Kolkata", hour12: false });
+const scanDay = fmtDate((meta && meta.date) || scanDate);
+const generated = new Date().toLocaleString("en-GB", {
+  timeZone: "Asia/Kolkata", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
+});
 
 // Per-repo rollup: Spring block first, then Mule; ranked by Critical inside each.
 const repoNames = [...new Set(rows.map((r) => r.repo))];
@@ -60,7 +101,7 @@ const repoRollup = repoNames
   })
   .sort((a, b) => platformRank(a.repo) - platformRank(b.repo) || b.crit - a.crit || b.high - a.high || b.total - a.total);
 
-const platRollup = ["Spring", "Mule"].map((p) => {
+const platRollup = PLAT_ORDER.map((p) => {
   const rs = rows.filter((r) => r.plat === p);
   return {
     platform: p,
@@ -185,11 +226,13 @@ const html = `<!doctype html>
   .plat{ font-size:7.6pt; font-weight:700; padding:.4mm 1.6mm; border-radius:1mm; white-space:nowrap; }
   .plat.Spring{ background:#e2f5ee; color:var(--low); }
   .plat.Mule{ background:#e4ebff; color:var(--accent); }
+  .plat.Other{ background:#fbf3d6; color:var(--med); }
 
   tr.grouphead td{ background:var(--soft); font-size:8.2pt; font-weight:700; text-transform:uppercase;
                    letter-spacing:.6px; padding:2.2mm 2mm; border-top:1.5px solid var(--line); }
   tr.grouphead.Spring td{ color:var(--low); border-left:2.5px solid var(--low); }
   tr.grouphead.Mule td{ color:var(--accent); border-left:2.5px solid var(--accent); }
+  tr.grouphead.Other td{ color:var(--med); border-left:2.5px solid var(--med); }
   .rownum{ display:inline-block; min-width:7mm; color:var(--dim); font-size:7.6pt; }
 
   /* Two analysis sections side by side; kept whole on one page. */
@@ -225,11 +268,11 @@ const html = `<!doctype html>
     <div class="cover-head">
       <div class="ch-left">
         <h1>Infrastructure<br>Vulnerability Report</h1>
-        <div class="sub">Dependency &amp; configuration CVE assessment<br>across ${repoRollup.length} production repositories</div>
+        <div class="sub">Dependency &amp; configuration CVE assessment<br>${meta ? `of RW's ${fmt(meta.targets)} in-scope repositories` : `across ${fmt(repoRollup.length)} repositories with findings`}</div>
       </div>
       <div class="ch-right">
         <span>Prepared by :</span><b>Natasha — Infra Manager</b>
-        <span>Scan date :</span><b>${esc(scanDate)}</b>
+        <span>Scan date :</span><b>${esc(scanDay)}</b>
         <span>Generated :</span><b>${esc(generated)} IST</b>
         <span>Scanner :</span><b>Trivy — dependency &amp; configuration CVEs</b>
       </div>
@@ -238,29 +281,32 @@ const html = `<!doctype html>
     <section class="cover-exec">
       <h2>Executive summary</h2>
       <p class="lede">
-        A total of <b>${rows.length.toLocaleString()}</b> known software vulnerabilities were identified across
-        <b>${repoRollup.length}</b> repositories, spanning <b>${distinctCves.toLocaleString()}</b> distinct CVEs.
-        <b>${(bySev.CRIT + bySev.HIGH).toLocaleString()}</b> are rated Critical or High and warrant prioritised remediation.
+        A total of <b>${fmt(rows.length)}</b> known software vulnerabilities were identified in
+        <b>${fmt(repoRollup.length)}</b>${meta ? ` of the <b>${fmt(meta.scanned)}</b> repositories scanned` : " repositories"}, spanning <b>${fmt(distinctCves)}</b> distinct CVEs.
+        <b>${fmt(bySev.CRIT + bySev.HIGH)}</b> are rated Critical or High and warrant prioritised remediation.
         All findings originate in third-party dependencies and configuration, not in application logic, so the
         majority are addressable through version upgrades rather than code rewrites.
       </p>
       ${
         meta
-          ? `<div class="note"><b>Scan coverage.</b> ${meta.scanned} of ${meta.targets} in-scope repositories were
-             cloned and scanned successfully on ${esc(scanDate)}${meta.failed ? `; ${meta.failed} could not be scanned (${esc(meta.failedNote || "see notes")})` : ""}.
-             Every repository was scanned on its configured production branch at the then-current commit.
-             ${meta.carriedOver ? `Findings listed here are only those confirmed present in this run; a further ${meta.carriedOver.toLocaleString()} historical findings across ${meta.carriedOverRepos} repositories were not re-detected and are excluded.` : ""}</div>`
+          ? `<div class="note"><b>Scan coverage.</b> Scanned ${fmt(meta.scanned)} of ${fmt(meta.targets)} in-scope repositories on ${esc(scanDay)};
+             ${fmt(repoRollup.length)} ${plural(repoRollup.length, "has", "have")} findings;
+             ${fmt(meta.failed)} could not be scanned${meta.failed ? " (listed at the end of this report)" : ""}${meta.skipped ? `; ${fmt(meta.skipped)} empty ${plural(meta.skipped, "repository was", "repositories were")} skipped` : ""}.
+             ${notOnGithub.length ? `${fmt(notOnGithub.length)} ${plural(notOnGithub.length, "repository", "repositories")} on the in-scope list ${plural(notOnGithub.length, "is", "are")} no longer active on GitHub (removed, renamed or archived).` : ""}
+             Each repository was scanned on its configured scan branch at the then-current commit, and only findings
+             confirmed present in this run are listed. Potential secrets flagged by pattern matching are reported
+             in the web edition, not here.</div>`
           : ""
       }
     </section>
 
     <div class="cover-stats">
-      <div class="cstat"><div class="n">${rows.length.toLocaleString()}</div><div class="l">Total findings</div></div>
-      <div class="cstat crit"><div class="n">${bySev.CRIT.toLocaleString()}</div><div class="l">Critical</div></div>
-      <div class="cstat high"><div class="n">${bySev.HIGH.toLocaleString()}</div><div class="l">High</div></div>
-      <div class="cstat med"><div class="n">${bySev.MED.toLocaleString()}</div><div class="l">Medium</div></div>
-      <div class="cstat low"><div class="n">${bySev.LOW.toLocaleString()}</div><div class="l">Low</div></div>
-      <div class="cstat"><div class="n">${distinctCves.toLocaleString()}</div><div class="l">Distinct CVEs</div></div>
+      <div class="cstat"><div class="n">${fmt(rows.length)}</div><div class="l">Total findings</div></div>
+      <div class="cstat crit"><div class="n">${fmt(bySev.CRIT)}</div><div class="l">Critical</div></div>
+      <div class="cstat high"><div class="n">${fmt(bySev.HIGH)}</div><div class="l">High</div></div>
+      <div class="cstat med"><div class="n">${fmt(bySev.MED)}</div><div class="l">Medium</div></div>
+      <div class="cstat low"><div class="n">${fmt(bySev.LOW)}</div><div class="l">Low</div></div>
+      <div class="cstat"><div class="n">${fmt(distinctCves)}</div><div class="l">Distinct CVEs</div></div>
     </div>
   </div>
 </div>
@@ -273,7 +319,7 @@ const html = `<!doctype html>
     .map(
       (s) => `<div class="bar"><div class="t">${SEV_LABEL[s]}</div>
       <div class="track"><div class="fill" style="width:${pct(bySev[s])}%;background:var(--${s.toLowerCase()})"></div></div>
-      <div class="v"><b>${bySev[s].toLocaleString()}</b> &nbsp; ${pct(bySev[s])}%</div></div>`,
+      <div class="v"><b>${fmt(bySev[s])}</b> &nbsp; ${pct(bySev[s])}%</div></div>`,
     )
     .join("\n")}
 </section>
@@ -286,9 +332,9 @@ const html = `<!doctype html>
     ${platRollup
       .filter((p) => p.total > 0)
       .map(
-        (p) => `<tr><td><span class="plat ${p.platform}">${p.platform}</span></td>
-        <td class="num">${p.repos}</td><td class="num">${p.crit.toLocaleString()}</td>
-        <td class="num">${p.high.toLocaleString()}</td><td class="num"><b>${p.total.toLocaleString()}</b></td></tr>`,
+        (p) => `<tr><td><span class="plat ${p.platform}">${PLAT_LABEL[p.platform]}</span></td>
+        <td class="num">${fmt(p.repos)}</td><td class="num">${fmt(p.crit)}</td>
+        <td class="num">${fmt(p.high)}</td><td class="num"><b>${fmt(p.total)}</b></td></tr>`,
       )
       .join("")}
     </tbody>
@@ -304,7 +350,7 @@ const html = `<!doctype html>
   <p class="lede">Dependencies carrying the most vulnerabilities — upgrading these clears the largest share of findings.</p>
   <table>
     <thead><tr><th>Component / package</th><th class="num">Findings</th></tr></thead>
-    <tbody>${topComponents.map(([c, n]) => `<tr><td class="mono wrap">${esc(c)}</td><td class="num">${n}</td></tr>`).join("")}</tbody>
+    <tbody>${topComponents.map(([c, n]) => `<tr><td class="mono wrap">${esc(c)}</td><td class="num">${fmt(n)}</td></tr>`).join("")}</tbody>
   </table>
 </section>
 
@@ -314,7 +360,7 @@ const html = `<!doctype html>
   <table>
     <thead><tr><th>CVE</th><th>Severity</th><th class="num">Count</th></tr></thead>
     <tbody>${topCves
-      .map((c) => `<tr><td class="mono">${esc(c.rule)}</td><td><span class="sev ${esc(c.sev)}">${SEV_LABEL[c.sev] || esc(c.sev)}</span></td><td class="num">${c.count}</td></tr>`)
+      .map((c) => `<tr><td class="mono">${esc(c.rule)}</td><td><span class="sev ${esc(c.sev)}">${SEV_LABEL[c.sev] || esc(c.sev)}</span></td><td class="num">${fmt(c.count)}</td></tr>`)
       .join("")}</tbody>
   </table>
 </section>
@@ -323,8 +369,8 @@ const html = `<!doctype html>
 <!-- ============ REPOSITORY SUMMARY ============ -->
 <div class="page-break"></div>
 <section>
-  <h2>All affected repositories (${repoRollup.length})</h2>
-  <p class="lede">Every repository with at least one finding, numbered 1–${repoRollup.length}. Spring services first, then Mule; ranked by Critical, then High, within each group.</p>
+  <h2>All affected repositories (${fmt(repoRollup.length)})</h2>
+  <p class="lede">Every repository with at least one finding, numbered 1–${fmt(repoRollup.length)}. Spring first, then Frontend / Other, then Mule; ranked by Critical, then High, within each group. Names containing “Mule” are MuleSoft; other Java repositories are Spring; the rest are Frontend / Other.</p>
   <table>
     <thead><tr><th>#&nbsp;Repository</th><th>Platform</th><th>Branch</th><th class="num">Crit</th><th class="num">High</th><th class="num">Med</th><th class="num">Low</th><th class="num">Total</th></tr></thead>
     <tbody>
@@ -334,16 +380,16 @@ const html = `<!doctype html>
         const groupCount = repoRollup.filter((x) => x.platform === r.platform).length;
         const head =
           r.platform !== prev
-            ? `<tr class="grouphead ${r.platform}"><td colspan="8">${r.platform} services — ${groupCount} repositor${groupCount === 1 ? "y" : "ies"}</td></tr>\n`
+            ? `<tr class="grouphead ${r.platform}"><td colspan="8">${PLAT_LABEL[r.platform]} — ${fmt(groupCount)} repositor${groupCount === 1 ? "y" : "ies"}</td></tr>\n`
             : "";
         return `${head}<tr><td class="mono wrap"><span class="rownum">${i + 1}</span>${esc(r.repo)}</td>
-        <td><span class="plat ${r.platform}">${r.platform}</span></td>
+        <td><span class="plat ${r.platform}">${PLAT_LABEL[r.platform]}</span></td>
         <td class="dim" style="font-size:7.8pt">${esc(r.branch)}</td>
-        <td class="num"><span class="sev CRIT">${r.crit || "—"}</span></td>
-        <td class="num"><span class="sev HIGH">${r.high || "—"}</span></td>
-        <td class="num dim">${r.med || "—"}</td>
-        <td class="num dim">${r.low || "—"}</td>
-        <td class="num"><b>${r.total}</b></td></tr>`;
+        <td class="num"><span class="sev CRIT">${r.crit ? fmt(r.crit) : "—"}</span></td>
+        <td class="num"><span class="sev HIGH">${r.high ? fmt(r.high) : "—"}</span></td>
+        <td class="num dim">${r.med ? fmt(r.med) : "—"}</td>
+        <td class="num dim">${r.low ? fmt(r.low) : "—"}</td>
+        <td class="num"><b>${fmt(r.total)}</b></td></tr>`;
       })
       .join("\n")}
     </tbody>
@@ -354,15 +400,15 @@ const html = `<!doctype html>
 <div class="page-break"></div>
 <section>
   <h2>Detailed findings register</h2>
-  <p class="lede">All ${rows.length.toLocaleString()} findings, grouped by repository in the same order as the summary above. Within each repository, findings are ordered by severity.</p>
+  <p class="lede">All ${fmt(rows.length)} findings, grouped by repository in the same order as the summary above. Within each repository, findings are ordered by severity.</p>
 </section>
 ${repoRollup
   .map(
     (r, i) => `<div class="repo-block">
   <div class="repo-head">
     <div class="nm">${i + 1}. ${esc(r.repo)}</div>
-    <div class="meta"><span class="plat ${r.platform}">${r.platform}</span> &nbsp; ${esc(r.branch)} &nbsp;·&nbsp;
-      ${r.crit} crit · ${r.high} high · ${r.med} med · ${r.low} low &nbsp;·&nbsp; <b>${r.total} total</b></div>
+    <div class="meta"><span class="plat ${r.platform}">${PLAT_LABEL[r.platform]}</span> &nbsp; ${esc(r.branch)} &nbsp;·&nbsp;
+      ${fmt(r.crit)} crit · ${fmt(r.high)} high · ${fmt(r.med)} med · ${fmt(r.low)} low &nbsp;·&nbsp; <b>${fmt(r.total)} total</b></div>
   </div>
   <table>
     <thead><tr><th style="width:15mm">Severity</th><th style="width:34mm">CVE</th><th>Vulnerable component</th><th style="width:50mm">File</th></tr></thead>
@@ -380,6 +426,25 @@ ${repoRollup
 </div>`,
   )
   .join("\n")}
+
+${
+  notScanned.length || notOnGithub.length
+    ? `<div class="page-break"></div>
+<section>
+  <h2>Repositories not scanned in this run (${fmt(notScanned.length + notOnGithub.length)})</h2>
+  <p class="lede">These in-scope repositories are not covered by the figures in this report. Any findings they had in earlier runs are not shown.</p>
+  <table>
+    <thead><tr><th>Repository</th><th>Branch</th><th>Status</th><th>Reason</th></tr></thead>
+    <tbody>
+    ${[
+      ...notScanned.map((r) => `<tr><td class="mono wrap">${esc(r.repo)}</td><td class="dim">${esc(r.branch || "—")}</td><td>${r.status === "skipped" ? "Skipped" : "Not scanned"}</td><td class="wrap">${esc(r.reason || "Scan failed")}</td></tr>`),
+      ...notOnGithub.map((n) => `<tr><td class="mono wrap">${esc(n)}</td><td class="dim">—</td><td>Not scanned</td><td class="wrap">On the in-scope list but no longer active on GitHub (removed, renamed or archived)</td></tr>`),
+    ].join("\n")}
+    </tbody>
+  </table>
+</section>`
+    : ""
+}
 
 </div>
 </body></html>`;
@@ -406,7 +471,7 @@ await page.pdf({
   headerTemplate: "<div></div>",
   footerTemplate: `<div style="width:100%;font-size:7.5pt;color:#5d6b82;padding:0 12mm;
       font-family:Helvetica,Arial,sans-serif;display:flex;justify-content:space-between;">
-      <span>RW Infrastructure — Vulnerability Report · ${scanDate} · Confidential</span>
+      <span>RW Infrastructure — Vulnerability Report · ${scanDay} · Confidential</span>
       <span>Page <span class="pageNumber"></span> of <span class="totalPages"></span></span>
     </div>`,
   timeout: 300000,

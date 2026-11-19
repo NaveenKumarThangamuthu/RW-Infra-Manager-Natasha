@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
 import { SearchInput } from "@/components/ui/input";
 import { downloadCsv, toCsv } from "@/components/csv";
-import { usd } from "@/components/natasha/format";
+import { dayLabel, usd } from "@/components/natasha/format";
 import { ErrorNote, PageHeader, Screen, ScreenSkeleton, ShareBar } from "@/components/natasha/primitives";
 import { useShell } from "@/components/shell/ShellContext";
 import { useJson } from "@/components/useJson";
@@ -18,9 +18,15 @@ interface SnsResp { range: { Start: string; End: string }; total: number; topics
 
 const COLS = "minmax(160px,1fr) 90px minmax(160px,1fr) minmax(120px,1fr) 80px 96px";
 const USAGE_COLS = "minmax(0,1fr) 120px 80px";
+/** Cost Explorer's placeholder for usage that is not tied to a topic. */
+const NO_TOPIC = "NoResourceId";
+const topicName = (n: string) => (n === NO_TOPIC ? "Not linked to a topic" : n);
+const topicArn = (a: string) => (a === NO_TOPIC ? "—" : a);
 
 const channelOf = (n: string) => (/SMTP/i.test(n) ? "Email" : /HTTP/i.test(n) ? "HTTP(S)" : /LAMBDA/i.test(n) ? "Lambda" : /SMS/i.test(n) ? "SMS" : /Requests/i.test(n) ? "API requests" : "Data transfer");
 const regionOfArn = (arn: string) => arn.split(":")[3] || "—";
+/** Cost Explorer end dates are exclusive: show the last day that is included. */
+const lastDay = (end: string) => new Date(Date.parse(`${end}T00:00:00Z`) - 86_400_000).toISOString();
 
 const CHANNELS: Array<{ label: string; icon: LucideIcon; test: RegExp }> = [
   { label: "HTTP delivery", icon: Globe, test: /HTTP/i },
@@ -34,6 +40,7 @@ export default function Sns() {
   const [q, setQ] = useState("");
   const [inspect, setInspect] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [zeroRows, setZeroRows] = useState(false);
 
   const topics = useMemo(() => [...(data?.topics ?? [])].sort((a, b) => b.cost - a.cost), [data]);
   const needle = q.trim().toLowerCase();
@@ -66,13 +73,17 @@ export default function Sns() {
   const maxCost = Math.max(0.0001, topics[0]?.cost ?? 0);
   const shownTotal = shown.reduce((a, t) => a + t.cost, 0);
   const openUsage = openTopic ? data.usage.filter((u) => u.resourceAndUsage.startsWith(openTopic.arn) || u.resourceAndUsage.startsWith(openTopic.name)) : [];
+  // Rows that round to $0.00 are folded away unless asked for.
+  const isZero = (u: Usage) => Math.abs(u.cost) < 0.005;
+  const zeroUsage = openUsage.filter(isZero).length;
+  const shownUsage = zeroRows ? openUsage : openUsage.filter((u) => !isZero(u));
 
   return (
     <Screen label="SNS">
       {header}
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,420px),1fr))] gap-4">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,420px),1fr))] items-start gap-4">
         <Card>
-          <CardHeader title="Delivery channels" description="Notification health by channel" className="pb-2" actions={<Badge size="md" className="text-fg-2">{usd(data.total)} · 14 days</Badge>} />
+          <CardHeader title="Cost by delivery channel" description="Last 14 days" className="pb-2" actions={<Badge size="md" className="text-fg-2">{usd(data.total)} · 14 days</Badge>} />
           <div className="flex flex-col px-5 pb-3.5 pt-1">
             {rows.map((c, i) => {
               const Icon = c.icon;
@@ -91,14 +102,14 @@ export default function Sns() {
           <div className="flex flex-col gap-3 px-5 pb-4 pt-2.5">
             {topics.slice(0, 5).map((t) => (
               <div key={t.arn} className="flex flex-col gap-2">
-                <div className="flex justify-between gap-3 text-[13px]"><span className="truncate font-mono">{t.name}</span><span className="font-semibold tnum">{usd(t.cost)}</span></div>
+                <div className="flex justify-between gap-3 text-[13px]"><span className={cn("truncate", t.name !== NO_TOPIC && "font-mono")}>{topicName(t.name)}</span><span className="font-semibold tnum">{usd(t.cost)}</span></div>
                 <ShareBar pct={(t.cost / maxCost) * 100} />
               </div>
             ))}
             {topics.length === 0 && <div className="text-[13px] text-muted-foreground">No SNS usage in this window.</div>}
           </div>
           <div className="mx-5 mb-5 mt-auto flex items-center gap-2.5 rounded-[10px] bg-card-2 px-3.5 py-3 text-[12.5px] text-muted-foreground">
-            <Info size={14} className="block shrink-0" />Usage without a topic ARN is grouped under NoResourceId.
+            <Info size={14} className="block shrink-0" />Usage that AWS does not tie to a topic is shown as “Not linked to a topic”.
           </div>
         </Card>
       </div>
@@ -119,9 +130,9 @@ export default function Sns() {
               const on = t.arn === openArn;
               return (
                 <div key={t.arn} className={cn("grid min-h-12 items-center gap-4 px-5 text-[13px] hover:bg-hover", i < shown.length - 1 && "border-0 border-b border-solid border-border")} style={{ gridTemplateColumns: COLS }}>
-                  <span className="truncate font-medium">{t.name}</span>
+                  <span className="truncate font-medium">{topicName(t.name)}</span>
                   <span className="truncate text-muted-foreground">{regionOfArn(t.arn)}</span>
-                  <span className="truncate font-mono text-[12.5px] text-fg-2" title={t.arn}>{t.arn}</span>
+                  <span className="truncate font-mono text-[12.5px] text-fg-2" title={topicArn(t.arn)}>{topicArn(t.arn)}</span>
                   <ShareBar pct={(t.cost / maxCost) * 100} />
                   <span className="text-right font-medium tnum">{usd(t.cost)}</span>
                   <Button size="xs" className="justify-self-end rounded-[7px]" onClick={() => setInspect(on ? "" : t.arn)}><Eye size={12} className="block" />{on ? "Hide usage" : "Inspect"}</Button>
@@ -134,13 +145,13 @@ export default function Sns() {
       </Card>
       {openTopic && (
         <Card className="overflow-hidden">
-          <CardHeader title={`Cost by usage type · ${openTopic.name}`} description="Usage types distinguish delivery channels — SMS, HTTP(S), email, mobile push and API requests" className="py-4" />
+          <CardHeader title={`Cost by usage type · ${topicName(openTopic.name)}`} description="Usage types distinguish delivery channels — SMS, HTTP(S), email, mobile push and API requests" className="py-4" />
           <div className="-mb-px overflow-x-auto">
             <div className="min-w-[460px]">
               <div className="grid h-[38px] items-center gap-4 border-0 border-y border-solid border-border bg-card-2 px-5 text-[12px] font-medium text-muted-foreground" style={{ gridTemplateColumns: USAGE_COLS }}>
                 <span>Usage type</span><span>Channel</span><span className="text-right">Cost</span>
               </div>
-              {openUsage.map((u) => (
+              {shownUsage.map((u) => (
                 <div key={u.resourceAndUsage} className="grid min-h-[38px] items-center gap-4 border-0 border-b border-solid border-border px-5 text-[13px] hover:bg-hover" style={{ gridTemplateColumns: USAGE_COLS }}>
                   <span className="truncate font-mono text-[12.5px]">{u.usageType}</span>
                   <span><Badge className="text-fg-2 font-normal">{channelOf(u.usageType)}</Badge></span>
@@ -148,9 +159,14 @@ export default function Sns() {
                 </div>
               ))}
               {openUsage.length === 0 && <div className="px-5 py-6 text-[13px] text-muted-foreground">No usage rows for this topic.</div>}
+              {zeroUsage > 0 && (
+                <button type="button" aria-expanded={zeroRows} onClick={() => setZeroRows((v) => !v)} className="w-full cursor-pointer border-0 border-b border-solid border-border bg-transparent px-5 py-2.5 text-left text-[12.5px] font-medium text-fg-2 hover:bg-hover">
+                  {zeroRows ? `Hide the ${zeroUsage} usage types that cost $0.00` : `Show ${zeroUsage} more usage types that cost $0.00`}
+                </button>
+              )}
             </div>
           </div>
-          <div className="border-0 border-t border-solid border-border px-5 pb-4 pt-3 text-[12.5px] text-muted-foreground">Window <span className="font-mono">{data.range.Start} → {data.range.End}</span> · last 14 days</div>
+          <div className="border-0 border-t border-solid border-border px-5 pb-4 pt-3 text-[12.5px] text-muted-foreground">{dayLabel(data.range.Start)} – {dayLabel(lastDay(data.range.End))} · last 14 days</div>
         </Card>
       )}
     </Screen>

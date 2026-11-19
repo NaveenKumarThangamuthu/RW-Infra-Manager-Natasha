@@ -5,8 +5,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { SearchInput } from "@/components/ui/input";
-import { ago } from "@/components/natasha/format";
-import { Dot, ErrorNote, PageHeader, Screen, ScreenSkeleton, StatStrip } from "@/components/natasha/primitives";
+import { ago, isStale, istDate, istDateTime } from "@/components/natasha/format";
+import { Banner, Dot, ErrorNote, PageHeader, Screen, ScreenSkeleton, StatStrip } from "@/components/natasha/primitives";
 import { useShell } from "@/components/shell/ShellContext";
 import { useJson } from "@/components/useJson";
 import { cn, tint } from "@/lib/utils";
@@ -16,12 +16,17 @@ interface Service {
   repo: string; branch: string; sonarProject: string | null; gate: string | null; lastAnalysis: string | null;
   health: { key: "good" | "fair" | "poor" | "critical" | "unknown"; label: string };
   measures: Record<string, string> | null; severityBreakdown: Partial<Record<Sev, number>> | null;
+  topIssues?: Array<{ severity: string; message: string; component: string; line?: number | null }> | null;
 }
 interface DataResp { hasData: boolean; generatedAt?: string; scope?: string; totals?: { bugs: number; vulns: number; hotspots: number; smells: number; ncloc: number; scanned: number; notScanned: number }; healthDistribution?: Record<string, number>; services?: Service[]; error?: string }
 interface LatestResp { hasReport: boolean; generatedAt?: string; productionHtml?: string; productionPdf?: string }
 type Filter = "all" | "risk" | "scanned" | "none";
 
-const COLS = "16px 82px minmax(230px,1.6fr) 74px 62px 62px 54px 54px 70px 62px 72px 86px 84px";
+const COLS = "16px 82px minmax(200px,1.6fr) 66px 56px 56px 48px 48px 64px 56px 68px 64px 76px";
+const SNAPSHOT_STALE_MINUTES = 2 * 24 * 60;
+const TOP_ISSUES = 5;
+// SonarQube writes "+0000"; browsers want "+00:00".
+const analysed = (v: string | null) => (v ? istDate(v.replace(/([+-]\d{2})(\d{2})$/, "$1:$2")) : null);
 // The internal SonarQube host: reachable only from the office network, as in the previous screen.
 const SONAR_BASE = "http://192.168.16.202:9000";
 const HEALTH: Record<string, { label: string; color: string }> = {
@@ -75,9 +80,10 @@ export default function Sonar() {
   };
 
   const generated = data?.generatedAt;
+  const stale = !!generated && isStale(generated, SNAPSHOT_STALE_MINUTES);
   const header = (
     <PageHeader title="Sonar Quality"
-      description={generated ? `SonarQube${data?.scope ? ` · ${data.scope}` : ""} · latest scan ${new Date(generated).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit", hour12: true })} IST (${ago(generated)})` : "SonarQube"}
+      description={generated ? <>SonarQube{data?.scope ? ` · ${data.scope}` : ""} · <span style={stale ? { color: "var(--warning)" } : undefined}>snapshot taken {istDateTime(generated)} ({ago(generated)})</span></> : "SonarQube"}
       actions={<>
         {latest?.productionPdf && <Button asChild size="lg"><a href={latest.productionPdf} target="_blank" rel="noopener noreferrer" className="no-underline"><FileText size={14} className="block" />PDF report</a></Button>}
         {latest?.productionHtml && <Button asChild size="lg"><a href={latest.productionHtml} target="_blank" rel="noopener noreferrer" className="no-underline"><ExternalLink size={14} className="block" />Full HTML view</a></Button>}
@@ -92,11 +98,13 @@ export default function Sonar() {
   const h = data.healthDistribution ?? {};
   const total = t.scanned + t.notScanned;
   const wid = (v: number) => `${total ? (v / total) * 100 : 0}%`;
+  const noCoverage = services.filter((s) => s.sonarProject).every((s) => n(s.measures?.coverage) === 0);
   const bar: Array<[string, number, string]> = [["Urgent", n(h.critical), "var(--danger)"], ["High risk", n(h.poor), "var(--orange)"], ["Some risk", n(h.fair), "var(--warning)"], ["Healthy", n(h.good), "var(--success)"]];
 
   return (
     <Screen label="Sonar Quality">
       {header}
+      {stale && <Banner tone="var(--warning)">This snapshot was taken {ago(generated)}, so the figures may have changed since. Each service also shows the date SonarQube last analysed it.</Banner>}
       <Card className="flex flex-col gap-3.5 px-5 py-[18px]">
         <div>
           <h3 className="m-0 text-[15px] font-semibold tracking-[-0.01em]">Service health</h3>
@@ -113,7 +121,7 @@ export default function Sonar() {
       </Card>
       <StatStrip items={[
         { label: "Bugs", value: fmt(t.bugs), color: t.bugs ? "var(--danger)" : "var(--success)", sub: "Runtime defects" },
-        { label: "Vulnerabilities", value: fmt(t.vulns), color: t.vulns ? "var(--danger)" : "var(--success)", sub: "Known weaknesses" },
+        { label: "Vulnerabilities", value: fmt(t.vulns), color: t.vulns ? "var(--danger)" : undefined, sub: "Known weaknesses" },
         { label: "Security hotspots", value: fmt(t.hotspots), color: t.hotspots ? "var(--warning)" : "var(--success)", sub: "Need review" },
         { label: "Code smells", value: fmt(t.smells), sub: "Maintainability issues" },
         { label: "Lines of code", value: millions(t.ncloc), sub: `${fmt(t.ncloc)} source lines` },
@@ -121,7 +129,7 @@ export default function Sonar() {
       <Card className="overflow-hidden">
         <div className="px-5 pb-3 pt-4">
           <h3 className="m-0 text-[15px] font-semibold tracking-[-0.01em]">Service-by-service breakdown</h3>
-          <div className="mt-[3px] text-[13px] text-muted-foreground">Health = quality gate + open blocker/critical count · open a row for its issue mix</div>
+          <div className="mt-[3px] text-[13px] text-muted-foreground">Urgent means blocker or critical issues are open, even when the quality gate passed · open a row for the rest of its issues</div>
         </div>
         <div className="flex flex-wrap items-center gap-2 px-5 pb-3.5">
           <SearchInput wrapperClassName="min-w-[200px] flex-[0_1_280px]" placeholder="Filter services…" value={q} onChange={(e) => setQ(e.target.value)} />
@@ -136,7 +144,7 @@ export default function Sonar() {
           })}
         </div>
         <div className="overflow-x-auto">
-          <div className="min-w-[1180px]">
+          <div className="min-w-[1084px]">
             <div className="grid h-[38px] items-center gap-3 border-0 border-y border-solid border-border bg-card-2 px-5 text-[12px] font-medium text-muted-foreground" style={{ gridTemplateColumns: COLS }}>
               <span /><span>Health</span><span>Service</span><span>Gate</span>
               {["Blocker", "Critical", "Bugs", "Vulns", "Hotspots", "Smells", "Coverage", "LOC"].map((c) => <span key={c} className="text-right">{c}</span>)}
@@ -152,14 +160,15 @@ export default function Sonar() {
               const gateOk = (s.gate ?? "").toUpperCase() === "OK" || (s.gate ?? "").toLowerCase() === "passed";
               const gateColor = gateOk ? "var(--success)" : "var(--danger)";
               const toggle = () => { if (scanned) setOpen((o) => ({ ...o, [key]: !isOpen })); };
+              const urgentWhy = s.health.key === "critical" ? `${blocker} blocker and ${fmt(critical)} critical issues open` : undefined;
               const ratings = [["Reliability", grade(m.reliability_rating)], ["Security", grade(m.security_rating)], ["Maintainability", grade(m.sqale_rating)]] as const;
               return (
                 <Fragment key={key}>
                   <div role={scanned ? "button" : undefined} tabIndex={scanned ? 0 : undefined} onClick={toggle} onKeyDown={(e) => { if (e.key === "Enter") toggle(); }}
                     className={cn("grid min-h-[52px] items-center gap-3 border-0 border-b border-solid border-border px-5 py-1.5 text-[13px] hover:bg-hover", scanned && "cursor-pointer", isOpen && "bg-hover", !scanned && "opacity-60")} style={{ gridTemplateColumns: COLS }}>
                     <span className={cn("text-muted-foreground transition-transform duration-150", isOpen && "rotate-90")}>{scanned && <ChevronRight size={14} className="block" />}</span>
-                    <span><Badge className="gap-[5px] whitespace-nowrap border-none" style={{ color: hl.color, background: scanned ? tint(hl.color) : "var(--card-2)" }}><Dot color={hl.color} />{hl.label}</Badge></span>
-                    <div className="min-w-0"><div className="truncate font-medium">{s.repo}</div><div className="mt-0.5 font-mono text-[11.5px] text-muted-foreground">{s.branch}</div></div>
+                    <span title={urgentWhy}><Badge className="gap-[5px] whitespace-nowrap border-none" style={{ color: hl.color, background: scanned ? tint(hl.color) : "var(--card-2)" }}><Dot color={hl.color} />{hl.label}</Badge></span>
+                    <div className="min-w-0"><div className="truncate font-medium">{s.repo}</div><div className="mt-0.5 truncate text-[11.5px] text-muted-foreground"><span className="font-mono">{s.branch}</span>{analysed(s.lastAnalysis) && ` · analysed ${analysed(s.lastAnalysis)}`}</div></div>
                     <span>{scanned && s.gate ? <Badge tone={gateColor}>{gateOk ? "Passed" : "Failed"}</Badge> : <span className="text-subtle">—</span>}</span>
                     {scanned ? (
                       <>
@@ -169,7 +178,7 @@ export default function Sonar() {
                         <span className="text-right tnum" style={{ color: n(m.vulnerabilities) ? "var(--danger)" : "var(--subtle-fg)" }}>{fmt(m.vulnerabilities)}</span>
                         <span className="text-right tnum">{fmt(m.security_hotspots)}</span>
                         <span className="text-right tnum">{fmt(m.code_smells)}</span>
-                        <span className="text-right text-muted-foreground tnum">{m.coverage != null && m.coverage !== "" ? `${n(m.coverage).toFixed(1)}%` : "—"}</span>
+                        <span className="text-right text-muted-foreground tnum" title={noCoverage ? "Test coverage is not reported to SonarQube" : undefined}>{!noCoverage && m.coverage != null && m.coverage !== "" ? `${n(m.coverage).toFixed(1)}%` : "—"}</span>
                         <span className="text-right text-fg-2 tnum">{fmt(m.ncloc)}</span>
                         <span className="flex gap-[3px]">
                           {ratings.map(([label, g]) => g
@@ -180,13 +189,28 @@ export default function Sonar() {
                     ) : <span className="text-[12.5px] text-muted-foreground" style={{ gridColumn: "span 9" }}>Not yet enrolled in SonarQube</span>}
                   </div>
                   {isOpen && (
-                    <div className="flex flex-wrap items-center gap-2.5 border-0 border-b border-solid border-border bg-hover pb-4 pl-[50px] pr-5 pt-3">
-                      {([["Blocker", blocker, "var(--danger)"], ["Critical", critical, "var(--orange)"], ["Bugs", n(m.bugs), "var(--warning)"], ["Hotspots", n(m.security_hotspots), "var(--info)"], ["Smells", n(m.code_smells), "var(--muted-fg)"]] as const).map(([l, v, c]) => (
-                        <span key={l} className="inline-flex h-[30px] items-center gap-2 rounded-[8px] border border-solid border-border bg-card px-2.5 text-[12.5px]"><Dot color={c} size={7} />{l}<span className="font-semibold tnum">{fmt(v)}</span></span>
-                      ))}
-                      <Button asChild size="sm" className="ml-auto px-2.5 text-[12.5px]">
-                        <a href={`${SONAR_BASE}/dashboard?id=${encodeURIComponent(s.sonarProject!)}`} target="_blank" rel="noopener noreferrer" className="no-underline"><ExternalLink size={12} className="block" />Open in SonarQube</a>
-                      </Button>
+                    <div className="flex flex-col gap-3 border-0 border-b border-solid border-border bg-hover pb-4 pl-[50px] pr-5 pt-3">
+                      <div className="flex flex-wrap items-center gap-2.5">
+                        {([["Major", n(s.severityBreakdown?.MAJOR), "var(--warning)"], ["Minor", n(s.severityBreakdown?.MINOR), "var(--info)"], ["Info", n(s.severityBreakdown?.INFO), "var(--muted-fg)"]] as const).map(([l, v, c]) => (
+                          <span key={l} className="inline-flex h-[30px] items-center gap-2 rounded-[8px] border border-solid border-border bg-card px-2.5 text-[12.5px]"><Dot color={c} size={7} />{l} issues<span className="font-semibold tnum">{fmt(v)}</span></span>
+                        ))}
+                        {m.duplicated_lines_density != null && <span className="inline-flex h-[30px] items-center gap-2 rounded-[8px] border border-solid border-border bg-card px-2.5 text-[12.5px]">Duplicated lines<span className="font-semibold tnum">{n(m.duplicated_lines_density).toFixed(1)}%</span></span>}
+                        <Button asChild size="sm" className="ml-auto px-2.5 text-[12.5px]">
+                          <a href={`${SONAR_BASE}/dashboard?id=${encodeURIComponent(s.sonarProject!)}`} target="_blank" rel="noopener noreferrer" className="no-underline" title="Opens only from the office network"><ExternalLink size={12} className="block" />Open in SonarQube (office network)</a>
+                        </Button>
+                      </div>
+                      {(s.topIssues ?? []).length > 0 && (
+                        <div className="overflow-hidden rounded-[10px] border border-solid border-border bg-card">
+                          <div className="border-0 border-b border-solid border-border px-3.5 py-2.5 text-[12.5px] font-semibold">Most severe open issues</div>
+                          {(s.topIssues ?? []).slice(0, TOP_ISSUES).map((issue, i) => (
+                            <div key={i} className="grid grid-cols-[70px_minmax(0,1.4fr)_minmax(0,1fr)] items-center gap-2.5 border-0 border-b border-solid border-border px-3.5 py-2 text-[12.5px] last:border-b-0">
+                              <span className="font-medium capitalize" style={{ color: issue.severity === "BLOCKER" ? "var(--danger)" : "var(--orange)" }}>{issue.severity.toLowerCase()}</span>
+                              <span className="truncate" title={issue.message}>{issue.message}</span>
+                              <span className="truncate font-mono text-[11.5px] text-muted-foreground" title={issue.component}>{issue.component.split("/").pop()}{issue.line ? `:${issue.line}` : ""}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </Fragment>

@@ -29,13 +29,12 @@ const isRw = (c: CertRow) => c.owner.toUpperCase() === "RW" || c.owner.toLowerCa
 const dateOnly = (iso: string) => iso.slice(0, 10);
 const driveUrl = (id: string) => `https://drive.google.com/file/d/${encodeURIComponent(id)}/view`;
 
-function code(name: string): string {
-  const parts = name.split(/[-_\s]+/).filter(Boolean);
-  if (parts.length > 1) {
-    const last = parts[parts.length - 1];
-    return (parts[0][0] + (/^\d/.test(last) ? last[0] : parts[1][0])).toUpperCase();
-  }
-  return name.slice(0, 2).toUpperCase();
+/** Folder names carry an "RW_" prefix and the year they were created; neither helps the reader. */
+const partnerName = (folder: string) => folder.replace(/^RW[-_\s]+/i, "").replace(/[-_\s]+(19|20)\d{2}$/, "") || folder;
+function code(folder: string): string {
+  const parts = partnerName(folder).split(/[-_\s]+/).filter(Boolean);
+  const letters = parts.length > 1 ? parts[0][0] + parts[1][0] : (parts[0] ?? folder).slice(0, 2);
+  return letters.toUpperCase();
 }
 const worst = (rows: CertRow[]) => SEV_ORDER.find((s) => rows.some((r) => r.severity === s)) ?? "unknown";
 
@@ -72,7 +71,7 @@ export default function Certificates() {
   const k = data?.kpis;
   const header = (
     <PageHeader title="Certificates"
-      description={k ? `AS2 EDI certificates · ${k.total} across ${distNames.length} distributors · last scan ${ago(k.lastScan)} · checked daily at 00:30 and 12:30 UTC` : "AS2 EDI certificates"}
+      description={k ? `AS2 EDI certificates · ${k.total} across ${distNames.length} distributors · last scan ${ago(k.lastScan)} · checked twice daily at 00:30 and 12:30 IST` : "AS2 EDI certificates"}
       actions={<Button variant="primary" size="lg" className="px-3.5" disabled={busy} onClick={() => void refresh()}><RefreshCw size={14} className={cn("block", busy && "animate-nt-spin")} />Refresh all</Button>} />
   );
   if (error) return <Screen label="Certificates">{header}<ErrorNote message={error} onRetry={reload} /></Screen>;
@@ -107,14 +106,14 @@ export default function Certificates() {
             <span className="inline-flex text-muted-foreground"><Clock size={14} className="block" /></span>
             <span className="text-muted-foreground">Next expiry</span>
             <span className="font-mono text-[12.5px] font-medium">{next.filename}</span>
-            <span className="text-muted-foreground">{next.distributor} · {dateOnly(next.notAfter)}</span>
+            <span className="text-muted-foreground">{partnerName(next.distributor)} · {dateOnly(next.notAfter)}</span>
             <Badge tone={nextColor} className="ml-auto">{next.daysLeft} days</Badge>
           </div>
         )}
       </Card>
       <div className="mt-2 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         <h2 className="m-0 text-[17px] font-semibold tracking-[-0.015em]">Distributors</h2>
-        <span className="text-[12.5px] text-muted-foreground">{distNames.length} folders in Drive · one card per partner · click to filter</span>
+        <span className="text-[12.5px] text-muted-foreground">{distNames.length} folders in Drive · one card per partner · days until our own and the partner’s earliest certificate expire · click to filter</span>
       </div>
       <div className="grid grid-cols-[repeat(var(--k10,5),minmax(0,1fr))] gap-3">
         {distNames.map((name, i) => {
@@ -130,7 +129,7 @@ export default function Certificates() {
               <span className="block h-1" style={{ background: color }} />
               <span className="flex items-center gap-2 px-3.5">
                 <span className="inline-grid h-[22px] w-[26px] place-items-center rounded-[6px] text-[11px] font-bold" style={{ color, background: tint(color, 16) }}>{code(name)}</span>
-                <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{name}</span>
+                <span className="min-w-0 flex-1 truncate text-[13px] font-semibold" title={name}>{partnerName(name)}</span>
                 <Dot color={SEV[worst(rows)].color} size={7} />
               </span>
               <span className="flex items-baseline gap-1.5 px-3.5">
@@ -138,9 +137,9 @@ export default function Certificates() {
                 <span className="text-[12px] text-muted-foreground">days to next expiry</span>
               </span>
               <span className="grid grid-cols-2 gap-2 px-3.5">
-                {[[`RW ×${rw.length}`, rw[0]], [`Partner ×${pt.length}`, pt[0]]].map(([label, c]) => (
+                {[[`Our ${rw.length === 1 ? "cert" : "certs"} (${rw.length})`, rw[0]], [`Partner ${pt.length === 1 ? "cert" : "certs"} (${pt.length})`, pt[0]]].map(([label, c]) => (
                   <span key={label as string} className="rounded-[8px] bg-card-2 px-[9px] py-[7px] text-[11.5px]">
-                    <span className="block text-muted-foreground">{label as string}</span>
+                    <span className="block truncate text-muted-foreground" title="Days until the earliest of these expires">{label as string}</span>
                     <span className="mt-0.5 block font-semibold tnum">{c ? `${(c as CertRow).daysLeft}d` : "—"}</span>
                   </span>
                 ))}
@@ -160,7 +159,7 @@ export default function Certificates() {
             <div className="mt-[3px] text-[13px] text-muted-foreground tnum">Showing {list.length} of {items.length} · sorted by days left</div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {dist && <button type="button" onClick={() => setDist(null)} className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-[8px] border border-solid border-border-strong bg-card-2 px-2.5 text-[12.5px] font-medium text-foreground">{dist}<X size={12} className="block" /></button>}
+            {dist && <button type="button" onClick={() => setDist(null)} className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-[8px] border border-solid border-border-strong bg-card-2 px-2.5 text-[12.5px] font-medium text-foreground">{partnerName(dist)}<X size={12} className="block" /></button>}
             {([["all", "All"], ["partner", "Partner"], ["rw", "RW"], ["soon", "≤ 90 days"]] as Array<[Filter, string]>).map(([f, label]) => {
               const on = filter === f;
               return (
@@ -182,7 +181,7 @@ export default function Certificates() {
               const s = SEV[c.severity], ownerColor = isRw(c) ? "var(--brand)" : "var(--info)";
               return (
                 <div key={c.id} className="grid min-h-11 items-center gap-3.5 border-0 border-b border-solid border-border px-5 text-[13px] hover:bg-hover" style={{ gridTemplateColumns: COLS }}>
-                  <span className="truncate">{c.distributor}</span>
+                  <span className="truncate" title={c.distributor}>{partnerName(c.distributor)}</span>
                   <span className="truncate font-mono text-[12px]" title={c.errorMessage ?? c.filename}>{c.filename}</span>
                   <span><Badge tone={ownerColor}>{isRw(c) ? "RW" : "Partner"}</Badge></span>
                   <span className="truncate text-[12.5px] text-fg-2" title={c.subject}>{c.subject}</span>

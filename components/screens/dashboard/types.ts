@@ -6,12 +6,16 @@ export interface SummaryResp {
   mtdTotal: number;
   last7: number;
   avgPerDay: number;
+  /** Days AWS has finished reporting, and trailing days it is still adding charges to. */
+  completeDays?: number;
+  partialDays?: number;
   projectedMonth: number | null;
   forecastRest: number | null;
   topServices: DeltaItem[];
   topRegions: DeltaItem[];
   trend: Array<{ date: string; amount: number }>;
-  prev?: { month: string; total: number; deltaPct: number | null };
+  /** `sameDayTotal` is the previous month scaled to the part of the month reported so far. */
+  prev?: { month: string; total: number; sameDayTotal?: number; deltaPct: number | null };
   stale?: boolean;
   asOf?: string;
 }

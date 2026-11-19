@@ -1,8 +1,8 @@
 /**
  * Cost anomaly feed for the home dashboard.
  *
- * Reads `ResourceDailyCost` rows, computes a 14-day median + MAD baseline per
- * (service, resourceId), and surfaces resources whose latest-day cost is at
+ * Reads `ResourceDailyCost` rows (complete days only, credits excluded), computes a 14-day
+ * median + MAD baseline per (service, resourceId), and surfaces resources whose latest-day cost is at
  * least `Z_THRESHOLD` MAD-standard-deviations above the baseline AND adds at
  * least `$MIN_DOLLARS` of incremental spend. Returns the top N outliers.
  *
@@ -59,16 +59,26 @@ export async function GET() {
   });
 
   const grouped = new Map<string, { service: string; resourceId: string; series: Array<{ date: string; amount: number }> }>();
+  const firstPartialDay = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
   for (const r of rows) {
+    // "NoResourceId" is the credit and adjustment line, not a resource, and a negative amount is a credit.
+    if (r.resourceId === "NoResourceId" || Number(r.amount) < 0) continue;
+    // The column holds either "2026-11-18" or "2026-11-18T00:00:00Z".
+    const date = r.date.slice(0, 10);
+    // AWS keeps adding charges to today and yesterday (UTC), so those days are not complete yet.
+    if (date >= firstPartialDay) continue;
     const k = `${r.service}|${r.resourceId}`;
     if (!grouped.has(k)) grouped.set(k, { service: r.service, resourceId: r.resourceId, series: [] });
-    grouped.get(k)!.series.push({ date: r.date, amount: Number(r.amount) });
+    grouped.get(k)!.series.push({ date, amount: Number(r.amount) });
   }
+  // Only a resource with a cost on the newest full day can be unusual "now".
+  const latestDay = [...grouped.values()].reduce((d, g) => (g.series[g.series.length - 1].date > d ? g.series[g.series.length - 1].date : d), "");
 
   const anomalies: Anomaly[] = [];
   for (const { service, resourceId, series } of grouped.values()) {
     if (series.length < 4) continue;
     const last = series[series.length - 1];
+    if (last.date !== latestDay) continue;
     const baseline = series.slice(0, -1).map((p) => p.amount);
     const med = median(baseline);
     const m = mad(baseline, med);

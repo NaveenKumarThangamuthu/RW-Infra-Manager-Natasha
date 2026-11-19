@@ -161,15 +161,14 @@ export function AppSidebar({ collapsed, mobile, drawer, onCloseDrawer }: { colla
   );
 }
 
+/** Open critical items, counted the same way as the Alerts page header: every critical finding plus critical service alerts. */
 function AlertsBadge() {
-  const count = useCritCount();
+  const { data } = useJson<{ bySeverity?: { CRIT?: number }; findings?: { CRIT?: number } }>("/api/incidents");
+  const count = data?.bySeverity?.CRIT ?? 0;
   if (!count) return null;
+  const fromFindings = data?.findings?.CRIT ?? 0;
+  const label = `${count.toLocaleString("en-US")} critical: ${fromFindings.toLocaleString("en-US")} repository findings and ${(count - fromFindings).toLocaleString("en-US")} service alerts`;
   return (
-    <span className="rounded-full px-[7px] py-px text-[11px] font-semibold text-danger tnum" style={{ background: tint("var(--danger)") }}>{count}</span>
+    <span title={label} aria-label={label} className="rounded-full px-[7px] py-px text-[11px] font-semibold text-danger tnum" style={{ background: tint("var(--danger)") }}>{count.toLocaleString("en-US")}</span>
   );
-}
-
-function useCritCount(): number {
-  const { data } = useJson<{ bySeverity?: { CRIT?: number } }>("/api/incidents");
-  return data?.bySeverity?.CRIT ?? 0;
 }

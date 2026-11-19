@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { queryRange, flattenEntries, guessSeverity } from "@/lib/loki";
+import { redactLog } from "@/lib/logRedact";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 20;
@@ -21,9 +22,9 @@ export async function GET(req: NextRequest) {
     const raw = await queryRange({ query: q, limit, startSec, endSec, direction: "backward" });
     const entries = flattenEntries(raw).map((e) => ({
       timeMs: e.timeMs,
-      message: e.message,
+      // Severity is read from the raw line; the text is redacted before it leaves the server.
+      message: redactLog(e.message),
       severity: guessSeverity(e.message),
-      labels: e.labels,
     }));
     return NextResponse.json({
       ok: true,

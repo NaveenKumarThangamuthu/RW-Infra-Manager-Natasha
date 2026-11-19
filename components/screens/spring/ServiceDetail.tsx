@@ -3,9 +3,11 @@ import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { Segmented } from "@/components/ui/segmented";
 import { Dot, ErrorNote } from "@/components/natasha/primitives";
-import { num } from "@/components/natasha/format";
+import { istDateTime, istTime, num } from "@/components/natasha/format";
 import { cn, tint } from "@/lib/utils";
 import { dedupeEntries, type DetailState, type DetailWindow, type LogDetailsResp } from "./data";
+
+const WINDOWS: DetailWindow[] = ["15m", "1h", "6h", "24h"];
 
 interface LokiEntry { timeMs: number; message: string; severity: string }
 interface LokiResp { ok: boolean; count: number; entries: LokiEntry[]; error?: string }
@@ -31,7 +33,7 @@ function LiveTail({ serviceName }: { serviceName: string }) {
       if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
       setData(j);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Loki fetch failed");
+      setErr(e instanceof Error ? e.message : "Could not load the live log");
     } finally {
       setBusy(false);
     }
@@ -45,7 +47,7 @@ function LiveTail({ serviceName }: { serviceName: string }) {
       <div className="flex flex-wrap items-center gap-2">
         <Dot color={err ? "var(--danger)" : "var(--success)"} size={7} />
         <span className="text-[13px] font-semibold">Live logs</span>
-        <span className="text-[12px] text-muted-foreground">Loki tail · last {win}</span>
+        <span className="text-[12px] text-muted-foreground">Last {win} · times in IST</span>
         <div className="ml-auto flex items-center gap-1.5">
           <Segmented size="xs" value={win} onChange={setWin} className="rounded-[8px] [&>button]:h-[22px] [&>button]:rounded-[5px] [&>button]:px-2"
             options={(["5m", "15m", "60m"] as const).map((k) => ({ value: k, label: k }))} aria-label="Tail window" />
@@ -59,7 +61,7 @@ function LiveTail({ serviceName }: { serviceName: string }) {
         <div className="flex max-h-[320px] flex-col gap-px overflow-y-auto rounded-[8px] border border-solid border-border bg-border">
           {entries.map((e, i) => (
             <div key={i} className="grid grid-cols-[84px_44px_minmax(0,1fr)] items-baseline gap-2.5 bg-card-2 px-3 py-1.5 font-mono text-[11.5px] leading-[1.55]">
-              <span className="text-muted-foreground tnum">{new Date(e.timeMs).toISOString().slice(11, 23)}</span>
+              <span className="text-muted-foreground tnum">{istTime(new Date(e.timeMs))}</span>
               <span className="font-medium" style={{ color: SEV_COLOR[e.severity.toUpperCase()] ?? "var(--muted-fg)" }}>{e.severity.toUpperCase().slice(0, 5)}</span>
               <span className="min-w-0 truncate text-fg-2" title={e.message}>{e.message}</span>
             </div>
@@ -67,14 +69,14 @@ function LiveTail({ serviceName }: { serviceName: string }) {
         </div>
       )}
       {data && !err && entries.length === 0 && (
-        <div className="text-[12.5px] leading-[1.5] text-muted-foreground">No Loki entries — service may not be shipping to Loki, or filename pattern doesn&apos;t match.</div>
+        <div className="text-[12.5px] leading-[1.5] text-muted-foreground">No live log lines for this service in this window.</div>
       )}
       {!data && !err && <div className="text-[12.5px] text-muted-foreground">Loading tail…</div>}
     </div>
   );
 }
 
-export function ServiceDetail({ name, hasElk, detail, window }: { name: string; hasElk: boolean; detail: DetailState | undefined; window: DetailWindow }) {
+export function ServiceDetail({ name, hasElk, detail, window, onWindow }: { name: string; hasElk: boolean; detail: DetailState | undefined; window: DetailWindow; onWindow: (w: DetailWindow) => void }) {
   const loading = hasElk && (!detail || "loading" in detail);
   const failed = detail && "error" in detail ? detail.error : null;
   const resp = detail && "entries" in detail ? (detail as LogDetailsResp) : null;
@@ -83,11 +85,11 @@ export function ServiceDetail({ name, hasElk, detail, window }: { name: string; 
     <div className="flex flex-col gap-3 border-0 border-b border-solid border-border bg-hover pb-5 pl-[54px] pr-5 pt-1.5">
       {!hasElk && (
         <div className="flex items-start gap-2.5 rounded-[10px] border border-solid px-3.5 py-3"
-          style={{ borderColor: "color-mix(in oklab, var(--danger) 30%, var(--border))", background: "color-mix(in oklab, var(--danger) 6%, var(--card))" }}>
-          <span className="pt-0.5 text-danger"><AlertTriangle size={14} className="block" /></span>
+          style={{ borderColor: "color-mix(in oklab, var(--warning) 30%, var(--border))", background: "color-mix(in oklab, var(--warning) 6%, var(--card))" }}>
+          <span className="pt-0.5 text-warning"><AlertTriangle size={14} className="block" /></span>
           <div className="min-w-0 text-[13px] leading-[1.55]">
-            <div className="font-semibold">ELK log stream not found</div>
-            <div className="mt-0.5 text-fg-2 text-wrap-pretty">Prometheus knows about “{name}”, but no ELK log stream matches. No ELK service name resembles this one — Filebeat likely isn&apos;t running on the host (or isn&apos;t tagging its log stream).</div>
+            <div className="font-semibold">No application logs matched to this service</div>
+            <div className="mt-0.5 text-fg-2 text-wrap-pretty">Health monitoring reports “{name}”, but the log store has no service with the same name, so error counts are not shown for it. The service may log under a different name or may not be shipping its logs.</div>
           </div>
         </div>
       )}
@@ -96,7 +98,9 @@ export function ServiceDetail({ name, hasElk, detail, window }: { name: string; 
           <div className="min-w-0 rounded-[10px] border border-solid border-border bg-card px-4 py-3.5">
             <div className="mb-1 flex flex-wrap items-baseline gap-2">
               <span className="text-[13px] font-semibold">Recent ERROR entries</span>
-              <span className="text-[12px] text-muted-foreground">ELK · deduplicated by pattern · last {window}</span>
+              <span className="text-[12px] text-muted-foreground">Application logs · grouped by pattern</span>
+              <Segmented size="xs" value={window} onChange={onWindow} aria-label="Error window" className="ml-auto rounded-[8px] [&>button]:h-[22px] [&>button]:rounded-[5px] [&>button]:px-2"
+                options={WINDOWS.map((w) => ({ value: w, label: w }))} />
             </div>
             {loading && <div className="pb-0.5 pt-3 text-[12.5px] text-muted-foreground">Loading ERROR entries…</div>}
             {failed && <div className="pt-2.5"><ErrorNote message={failed} /></div>}
@@ -107,7 +111,7 @@ export function ServiceDetail({ name, hasElk, detail, window }: { name: string; 
                 <div className="min-w-0">
                   <div className="break-words font-mono text-[11.5px] leading-[1.6] text-fg-2">{b.sample.message.slice(0, 800)}</div>
                   <div className="mt-1 text-[11.5px] text-muted-foreground">
-                    {b.lastAt ? `Last seen ${new Date(b.lastAt).toLocaleString()}` : "Last seen unknown"}{b.hosts.length ? ` · ${b.hosts.join(" · ")}` : ""}
+                    {b.lastAt ? `Last seen ${istDateTime(b.lastAt)}` : "Last seen unknown"}{b.hosts.length ? ` · ${b.hosts.join(" · ")}` : ""}
                   </div>
                 </div>
               </div>

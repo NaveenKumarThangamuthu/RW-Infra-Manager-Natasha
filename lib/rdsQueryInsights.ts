@@ -89,66 +89,83 @@ function truncate(s: string, n = 400): string {
   return s.length > n ? s.slice(0, n) + "…" : s;
 }
 
+/** 3561015092442 → "3.56 trillion"; below a million, grouped digits. */
+function big(v: number): string {
+  const units: Array<[number, string]> = [[1e12, "trillion"], [1e9, "billion"], [1e6, "million"]];
+  const hit = units.find(([size]) => Math.abs(v) >= size);
+  return hit ? `${(v / hit[0]).toFixed(2).replace(/\.?0+$/, "")} ${hit[1]}` : Math.round(v).toLocaleString("en-US");
+}
+
+/** Seconds as "45 s", "12 min" or "357 h". */
+function span(seconds: number): string {
+  if (seconds >= 3600) return `${Math.round(seconds / 3600).toLocaleString("en-US")} h`;
+  if (seconds >= 60) return `${Math.round(seconds / 60)} min`;
+  return `${seconds.toFixed(seconds < 10 ? 1 : 0)} s`;
+}
+
+/** Milliseconds as "840 ms" or "2.8 s". */
+const latency = (ms: number) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms)} ms`);
+
 function buildIssues(queries: TopQuery[]): QueryIssue[] {
+  const rank = { critical: 0, warning: 1, info: 2 } as const;
   const out: QueryIssue[] = [];
 
+  // One issue per statement: every rule that fires for it is folded into a single card,
+  // titled by the most severe one, so the same statement is not listed two or three times.
   for (const q of queries.slice(0, 10)) {
+    const hits: Array<Omit<QueryIssue, "digestText">> = [];
+
     // A statement returning few rows while examining very many is the classic
     // missing-index signature.
     if (q.examinedPerSent != null && q.examinedPerSent > 1000 && q.sumRowsExamined > 1_000_000) {
-      out.push({
+      hits.push({
         severity: "critical",
         title: "Query scanning far more rows than it returns",
-        evidence: `Examines ${Math.round(q.examinedPerSent).toLocaleString()} rows per row returned · ${q.sumRowsExamined.toLocaleString()} rows examined across ${q.countStar.toLocaleString()} calls.`,
+        evidence: `Examines ${big(q.examinedPerSent)} rows per row returned: ${big(q.sumRowsExamined)} rows examined across ${big(q.countStar)} calls.`,
         action: "Almost certainly a missing or unusable index. Run EXPLAIN on this statement and index the filtered columns.",
-        digestText: truncate(q.digestText),
       });
     } else if (q.rowsExaminedPerCall > 100_000) {
-      out.push({
+      hits.push({
         severity: "warning",
         title: "Query examines a very large row set per call",
-        evidence: `${Math.round(q.rowsExaminedPerCall).toLocaleString()} rows examined per execution · ${q.countStar.toLocaleString()} calls · ${q.seconds.toFixed(1)}s total.`,
-        action: "Check whether the predicate is sargable and an index covers it; consider pagination or a narrower date range.",
-        digestText: truncate(q.digestText),
+        evidence: `${big(q.rowsExaminedPerCall)} rows examined per call over ${big(q.countStar)} calls (${span(q.seconds)} in total).`,
+        action: "Check that the filter can use an index and that one covers it; consider pagination or a narrower date range.",
       });
     }
 
     if (q.noIndexUsedCount > 0 && q.countStar > 0) {
       const pct = (q.noIndexUsedCount / q.countStar) * 100;
       if (pct >= 50) {
-        out.push({
+        hits.push({
           severity: "warning",
           title: "Query frequently runs without an index",
-          evidence: `${pct.toFixed(0)}% of ${q.countStar.toLocaleString()} executions used no index.`,
-          action: "MySQL reports no index was used for the majority of calls — add a covering index for the WHERE/JOIN columns.",
-          digestText: truncate(q.digestText),
+          evidence: `${pct.toFixed(0)}% of ${big(q.countStar)} calls used no index.`,
+          action: "MySQL reports no index was used for most calls. Add a covering index for the WHERE and JOIN columns.",
         });
       }
     }
 
     if (q.avgLatencyMs > 1000 && q.countStar >= 10) {
-      out.push({
+      hits.push({
         severity: "warning",
         title: "Slow statement",
-        evidence: `Average ${q.avgLatencyMs.toFixed(0)} ms over ${q.countStar.toLocaleString()} executions (${q.seconds.toFixed(1)}s total).`,
+        evidence: `Average ${latency(q.avgLatencyMs)} over ${big(q.countStar)} calls (${span(q.seconds)} in total).`,
         action: "Over a second per call at this volume is a user-visible delay. Profile with EXPLAIN ANALYZE.",
-        digestText: truncate(q.digestText),
       });
     }
+
+    if (!hits.length) continue;
+    hits.sort((a, b) => rank[a.severity] - rank[b.severity]);
+    out.push({
+      severity: hits[0].severity,
+      title: hits[0].title,
+      evidence: hits.map((h) => h.evidence).join(" "),
+      action: hits[0].action,
+      digestText: truncate(q.digestText),
+    });
   }
 
-  const rank = { critical: 0, warning: 1, info: 2 } as const;
-  // One issue per digest — keep the highest severity for each.
-  const seen = new Set<string>();
-  return out
-    .sort((a, b) => rank[a.severity] - rank[b.severity])
-    .filter((i) => {
-      const k = `${i.title}|${i.digestText ?? ""}`;
-      if (seen.has(k)) return false;
-      seen.add(k);
-      return true;
-    })
-    .slice(0, 12);
+  return out.sort((a, b) => rank[a.severity] - rank[b.severity]).slice(0, 12);
 }
 
 export async function getRdsQueryInsights(
@@ -211,7 +228,7 @@ export async function getRdsQueryInsights(
         ...base,
         available: false,
         performanceSchemaEnabled: false,
-        reason: "performance_schema is OFF on this instance.",
+        reason: "MySQL statement statistics (performance_schema) are switched off on this instance.",
         remedy: "Set performance_schema=1 in the DB parameter group and reboot. Without it MySQL collects no statement digests.",
       };
     }

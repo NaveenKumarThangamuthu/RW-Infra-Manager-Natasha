@@ -56,7 +56,7 @@ export async function GET() {
     }),
     prisma.finding.groupBy({
       by: ["repoFullName", "severity"],
-      where: { suppressedAt: null, severity: { in: ["CRIT", "HIGH"] }, lastSeenAt: { gte: new Date(Date.now() - 7 * 86_400_000) } },
+      where: { suppressedAt: null, severity: { in: ["CRIT", "HIGH"] }, lastSeenAt: { gte: new Date(Date.now() - 2 * 86_400_000) } },
       _count: { _all: true },
     }),
   ]);

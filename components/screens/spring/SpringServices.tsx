@@ -9,7 +9,7 @@ import { SearchInput } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
 import { downloadCsv, toCsv } from "@/components/csv";
 import { CheckButton } from "@/components/natasha/CheckButton";
-import { ago, bytes, isStale, num } from "@/components/natasha/format";
+import { ago, bytes, istDateTime, istTime, isStale, num } from "@/components/natasha/format";
 import { Banner, EmptyState, ErrorNote, PageHeader, Screen, ScreenSkeleton, StatStrip } from "@/components/natasha/primitives";
 import { useOnRefreshed, useShell } from "@/components/shell/ShellContext";
 import { useJson } from "@/components/useJson";
@@ -17,9 +17,11 @@ import { cn } from "@/lib/utils";
 import { buildLogLookup, jobShortName, type DetailState, type DetailWindow, type HealthResp, type LogResp, type SpringServiceHealth } from "./data";
 import { ServiceDetail } from "./ServiceDetail";
 
-const COLS = "20px minmax(240px,2fr) 116px 64px 56px minmax(170px,1fr)";
+const COLS = "20px minmax(240px,2fr) 180px 64px 56px minmax(170px,1fr)";
+/** The snapshot is refreshed twice a day; older than this it is labelled with its real time. */
+const FRESH_MINUTES = 60;
+const rowKey = (r: SpringServiceHealth) => `${r.serviceName}|${r.instance}|${r.job}`;
 type SortKey = "name" | "err" | "cpu" | "heap";
-const WINDOWS: DetailWindow[] = ["15m", "1h", "6h", "24h"];
 
 function Inner() {
   const params = useSearchParams();
@@ -67,11 +69,12 @@ function Inner() {
     }
   }, []);
 
-  const toggle = (name: string) => {
+  const toggle = (r: SpringServiceHealth) => {
     const next = new Set(open);
-    if (next.has(name)) next.delete(name);
+    const key = rowKey(r), name = r.serviceName;
+    if (next.has(key)) next.delete(key);
     else {
-      next.add(name);
+      next.add(key);
       const elk = logLookup(name)?.service;
       const cached = details[name];
       if (elk && (!cached || "error" in cached)) void fetchDetails(name, elk, win);
@@ -82,7 +85,7 @@ function Inner() {
   const changeWindow = (w: DetailWindow) => {
     setWin(w);
     setDetails({});
-    for (const name of Array.from(open)) {
+    for (const name of Array.from(new Set(rows.filter((r) => open.has(rowKey(r))).map((r) => r.serviceName)))) {
       const elk = logLookup(name)?.service;
       if (elk) void fetchDetails(name, elk, w);
     }
@@ -126,7 +129,7 @@ function Inner() {
   );
 
   const header = (
-    <PageHeader maxWidth={780} title="Spring Services" description="Health (Prometheus) + ERROR/WARN log stats (DEV ELK) in one view. Click any row to see recent ERROR entries (deduplicated by pattern)."
+    <PageHeader maxWidth={780} title="Spring Services" description="Service health with error and warning counts from the application logs, in one view. Open a row to see its recent error entries, grouped by pattern."
       actions={<Button variant="primary" size="lg" className="px-3.5" disabled={refreshing} onClick={() => void refresh(["spring-health", "spring-logs"])}>
         <RefreshCw size={14} className={cn("block", refreshing && "animate-nt-spin")} />Refresh data
       </Button>} />
@@ -140,30 +143,29 @@ function Inner() {
   const erroring = rows.filter((r) => errOf(r) > 0).length;
   const totalErrors = (logs.data?.services ?? []).reduce((n, s) => n + s.errors, 0);
   const anyOpen = open.size > 0;
-  const good = (n: number) => (n > 0 ? "var(--danger)" : "var(--success)");
+  const good = (n: number) => (n > 0 ? "var(--danger)" : undefined);
 
   const Row = (r: SpringServiceHealth) => {
     const log = logLookup(r.serviceName);
-    const isOpen = open.has(r.serviceName);
+    const isOpen = open.has(rowKey(r));
     const errs = log?.errors ?? 0;
     const heap = r.heapPct;
     const heapColor = heap == null ? "var(--subtle-fg)" : heap >= 85 ? "var(--danger)" : heap >= 70 ? "var(--warning)" : "var(--success)";
     const statusColor = r.up ? "var(--success)" : "var(--danger)";
     return (
-      <Fragment key={`${r.serviceName}-${r.instance}-${r.job}`}>
-        <div role="button" tabIndex={0} onClick={() => toggle(r.serviceName)} onKeyDown={(e) => { if (e.key === "Enter") toggle(r.serviceName); }}
+      <Fragment key={rowKey(r)}>
+        <div role="button" tabIndex={0} onClick={() => toggle(r)} onKeyDown={(e) => { if (e.key === "Enter") toggle(r); }}
           className={cn("grid min-h-14 cursor-pointer items-center gap-3.5 border-0 border-b border-solid border-border px-5 py-2 hover:bg-hover", isOpen && "bg-hover")} style={{ gridTemplateColumns: COLS }}>
           <span className={cn("grid place-items-center text-muted-foreground transition-transform duration-150", isOpen && "rotate-90")}><ChevronRight size={14} className="block" /></span>
           <div className="min-w-0">
             <div className="flex min-w-0 items-center gap-1.5">
               <span className="truncate text-[13.5px] font-medium">{r.serviceName}</span>
-              {["Java", "Spring"].map((t) => <span key={t} className="shrink-0 rounded-[4px] border border-solid border-border px-[5px] text-[10.5px] font-medium text-muted-foreground">{t}</span>)}
             </div>
             <div className="mt-0.5 truncate text-[12px] text-muted-foreground">{r.job} · <span className="font-mono">{r.instance}</span></div>
           </div>
           <div className="text-right">
-            <div className="text-[13px] font-semibold tnum" style={{ color: errs ? (errs >= 1000 ? "var(--danger)" : "var(--fg)") : "var(--subtle-fg)" }}>{errs ? num(errs) : "—"}</div>
-            {log && errs > 0 && <div className="mt-0.5 whitespace-nowrap text-[11px] text-muted-foreground tnum">{(log.errorRate * 100).toFixed(2)}% of {num(log.total)} req</div>}
+            <div className="text-[13px] font-semibold tnum" title={log ? undefined : "No application logs matched to this service"} style={{ color: errs ? (errs >= 1000 ? "var(--danger)" : "var(--fg)") : "var(--subtle-fg)" }}>{log ? num(errs) : "—"}</div>
+            {log && errs > 0 && <div className="mt-0.5 whitespace-nowrap text-[11px] text-muted-foreground tnum">{num(log.total)} log lines · {(log.errorRate * 100).toFixed(log.errorRate >= 0.9995 ? 0 : 1)}% ERROR</div>}
           </div>
           <Badge tone={statusColor} className="justify-self-start gap-[5px] text-[11.5px] font-semibold">
             <span className="h-1.5 w-1.5 rounded-[6px]" style={{ background: statusColor }} />{r.up ? "UP" : "DOWN"}
@@ -177,24 +179,33 @@ function Inner() {
             <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground">{bytes(r.heapUsedBytes)} / {bytes(r.heapMaxBytes)}</div>
           </div>
         </div>
-        {isOpen && <ServiceDetail name={r.serviceName} hasElk={!!log} detail={details[r.serviceName]} window={win} />}
+        {isOpen && <ServiceDetail name={r.serviceName} hasElk={!!log} detail={details[r.serviceName]} window={win} onWindow={changeWindow} />}
       </Fragment>
     );
   };
 
   const promAt = health.data.fetchedAt;
   const elkAt = logs.data?.fetchedAt ?? null;
+  const promStale = isStale(promAt, FRESH_MINUTES), elkStale = !!elkAt && isStale(elkAt, FRESH_MINUTES);
+  // When the log snapshot is old, say which hour the "1h" figures cover.
+  const hour = elkStale && elkAt ? `1h to ${istTime(elkAt).slice(0, 5)}` : "1h";
 
   return (
     <Screen label="Spring Services">
       {header}
       {logs.data?.via === "public" && <Banner tone="var(--warning)">Using the public ELK endpoint — the LAN URL is unreachable, so logs come from the slower route.</Banner>}
+      {(promStale || elkStale) && (
+        <Banner tone="var(--warning)">
+          <span className="text-warning"><Clock size={14} className="block" /></span>
+          <span className="min-w-0 flex-[1_1_260px]">These figures are a saved snapshot, not live: health from <span className="font-semibold">{istDateTime(promAt)}</span>, logs from <span className="font-semibold">{istDateTime(elkAt)}</span>. Use “Refresh data” for current numbers.</span>
+        </Banner>
+      )}
       <StatStrip items={[
         { label: "Total services", value: num(rows.length) },
         { label: "Down", value: num(down), color: good(down) },
         { label: "Heap over 85%", value: num(highHeap), color: good(highHeap) },
-        { label: "Erroring · 1h", value: num(erroring), color: good(erroring) },
-        { label: "Errors · 1h", value: num(totalErrors), color: good(totalErrors) },
+        { label: `Erroring · ${hour}`, value: num(erroring), color: good(erroring), sub: "services with ERROR lines" },
+        { label: `Errors · ${hour}`, value: num(totalErrors), color: good(totalErrors), sub: "ERROR log lines, all services" },
       ]} />
       <Card className="overflow-hidden">
         <div className="flex flex-wrap items-center gap-2.5 px-4 pb-2.5 pt-3.5">
@@ -218,18 +229,15 @@ function Inner() {
             }), [
               { key: "serviceName", label: "Service" }, { key: "job", label: "Job" }, { key: "instance", label: "Instance" }, { key: "up", label: "Status" },
               { key: "cpuPct", label: "CPU %" }, { key: "heapPct", label: "Heap %" }, { key: "heapUsedBytes", label: "Heap used (B)" }, { key: "heapMaxBytes", label: "Heap max (B)" },
-              { key: "errors", label: "ERROR (1h)" }, { key: "warns", label: "WARN (1h)" }, { key: "total", label: "Total (1h)" }, { key: "errorRatePct", label: "Error rate %" },
+              { key: "errors", label: "ERROR lines (1h)" }, { key: "warns", label: "WARN lines (1h)" }, { key: "total", label: "Log lines (1h)" }, { key: "errorRatePct", label: "ERROR lines % of log lines" },
               { key: "latestError", label: "Latest ERROR (excerpt)" },
             ]));
             toast(`Exported ${filtered.length} services to CSV`);
           }}><Download size={14} className="block" />Export CSV</Button>
         </div>
         <div className="flex flex-wrap items-center gap-2.5 border-0 border-b border-solid border-border px-4 pb-3.5">
-          <span title="Time window for the ERROR entries shown when a row is expanded">
-            <Segmented size="xs" value={win} onChange={changeWindow} aria-label="Log window" options={WINDOWS.map((w) => ({ value: w, label: w }))} />
-          </span>
-          <Badge size="md" tone={isStale(promAt) ? "var(--warning)" : "var(--success)"}><Clock size={12} className="block" />Prometheus {ago(promAt)}</Badge>
-          <Badge size="md" tone={isStale(elkAt) ? "var(--warning)" : "var(--success)"}><Clock size={12} className="block" />ELK logs {ago(elkAt)}</Badge>
+          <Badge size="md" tone={promStale ? "var(--warning)" : "var(--success)"} title={istDateTime(promAt)}><Clock size={12} className="block" />Health {ago(promAt)}</Badge>
+          <Badge size="md" tone={elkStale ? "var(--warning)" : "var(--success)"} title={istDateTime(elkAt)}><Clock size={12} className="block" />Logs {ago(elkAt)}</Badge>
           <Button variant="ghost" size="xs" onClick={() => {
             if (anyOpen) { setOpen(new Set()); return; }
             const withErrors = filtered.filter((r) => errOf(r) > 0);
@@ -238,16 +246,16 @@ function Inner() {
               const cached = details[r.serviceName];
               if (elk && (!cached || "error" in cached)) void fetchDetails(r.serviceName, elk, win);
             }
-            setOpen(new Set(withErrors.map((r) => r.serviceName)));
+            setOpen(new Set(withErrors.map(rowKey)));
           }}><ChevronDown size={12} className="block" />{anyOpen ? "Collapse all" : "Expand with errors"}</Button>
           <span className="ml-auto text-[12.5px] text-muted-foreground tnum">Showing {filtered.length} of {rows.length} services</span>
         </div>
         <div className="overflow-x-auto">
-          <div className="min-w-[780px]">
+          <div className="min-w-[850px]">
             <div className="grid h-[38px] items-center gap-3.5 border-0 border-b border-solid border-border bg-card-2 px-5 text-[12px] font-medium text-muted-foreground" style={{ gridTemplateColumns: COLS }}>
               <span />
               <SortHead k="name">Service</SortHead>
-              <SortHead k="err" end>Errors (1h)</SortHead>
+              <SortHead k="err" end>Errors ({hour})</SortHead>
               <span>Status</span>
               <SortHead k="cpu">CPU</SortHead>
               <SortHead k="heap">Heap</SortHead>

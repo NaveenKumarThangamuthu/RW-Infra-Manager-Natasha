@@ -6,6 +6,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { fetchLambdaLogs } from "@/lib/lambdaOhio";
+import { redactLog } from "@/lib/logRedact";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 20;
@@ -21,7 +22,8 @@ export async function GET(req: Request) {
   if (!fn) return NextResponse.json({ error: "Missing function" }, { status: 400 });
 
   try {
-    const events = await fetchLambdaLogs(fn, limit, hours);
+    // Redacted here so raw log text never reaches the browser.
+    const events = (await fetchLambdaLogs(fn, limit, hours)).map((e) => ({ ...e, message: redactLog(e.message) }));
     return NextResponse.json({
       ok: true,
       fetchedAt: new Date().toISOString(),

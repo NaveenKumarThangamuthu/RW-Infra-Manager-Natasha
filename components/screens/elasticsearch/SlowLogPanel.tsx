@@ -1,8 +1,8 @@
 "use client";
 import { useMemo } from "react";
 import { Card, CardHeader } from "@/components/ui/card";
-import { TimeChart } from "@/components/natasha/charts";
-import { compact, num } from "@/components/natasha/format";
+import { BarChart } from "@/components/natasha/charts";
+import { compact, istTime, num } from "@/components/natasha/format";
 import { ErrorNote, Skeleton } from "@/components/natasha/primitives";
 import { useJson } from "@/components/useJson";
 import { IssueList } from "./IssueList";
@@ -23,11 +23,15 @@ function Heading({ sub }: { sub?: string }) {
 
 function Loaded({ d }: { d: SlowLogOk }) {
   const long = d.windowHours > 24;
-  const chart = useMemo(() => istLabels(d.trend.map(([t]) => t), long), [d.trend, long]);
+  const chart = useMemo(() => {
+    const c = istLabels(d.trend.map(([t]) => t), long);
+    // Over several days, name each day once (under its first bar) instead of repeating it.
+    return long ? { ...c, labels: c.labels.map((l, i) => (i === 0 || l !== c.labels[i - 1] ? l : "")) } : c;
+  }, [d.trend, long]);
   const stats: Array<[string, string, string]> = [
     ["Slow searches", num(d.total), `${num(d.levels.warn)} warn · ${num(d.levels.info)} info · ${num(d.levels.debug)} debug`],
     ["Typical (p50)", dur(d.p50Ms), "half took longer"],
-    ["p95", dur(d.p95Ms), `p99 ${dur(d.p99Ms)}`],
+    ["Slow (p95)", dur(d.p95Ms), `1 in 20 took longer · p99 ${dur(d.p99Ms)}`],
     ["Slowest", dur(d.maxMs), d.slowest[0] ? d.slowest[0].index : "—"],
   ];
   return (
@@ -53,8 +57,10 @@ function Loaded({ d }: { d: SlowLogOk }) {
       <Card className="pb-4">
         <CardHeader title="Slow searches over time" description={`Searches logged per ${BUCKET[d.windowHours] ?? "interval"} · times in IST`} />
         <div className="px-4 pt-3">
-          <TimeChart labels={chart.labels} full={chart.full} height={160} area strokeWidth={1.75} fmt={num} axisFmt={compact} axisWidth={40} ticks={6} yTicks={3}
-            empty="No slow searches in this window." series={[{ name: "Slow searches", color: "var(--warning)", values: d.trend.map(([, n]) => n) }]} />
+          {/* Counts per interval are bars: a curve would suggest a gradual change between buckets. */}
+          {d.trend.length > 0
+            ? <BarChart labels={chart.labels} full={chart.full} values={d.trend.map(([, n]) => n)} height={160} gap={2} color="var(--warning)" fmt={(v) => `${num(v)} slow searches`} axisFmt={compact} axisWidth={40} ticks={long ? d.trend.length : 6} yTicks={3} />
+            : <div className="grid h-[186px] place-items-center text-[13px] text-muted-foreground">No slow searches in this window.</div>}
         </div>
       </Card>
       <SlowLogTables d={d} />
@@ -93,7 +99,7 @@ export function SlowLogPanel({ hours, refresh }: { hours: number; refresh: numbe
     );
   }
   if (data.state === "error") return <><Heading /><ErrorNote message={data.message} onRetry={reload} /></>;
-  const sub = `Elasticsearch slow log · last ${data.windowHours >= 72 ? `${data.windowHours / 24} days` : `${data.windowHours}h`} · fetched ${new Date(data.fetchedAt).toLocaleTimeString()}`;
+  const sub = `Elasticsearch slow log · last ${data.windowHours >= 72 ? `${data.windowHours / 24} days` : `${data.windowHours}h`} · fetched ${istTime(data.fetchedAt)} IST`;
   if (data.total === 0) {
     return <><Heading sub={sub} /><Card className="px-5 py-4 text-[13px] text-muted-foreground">No slow searches recorded in this window.</Card></>;
   }

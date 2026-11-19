@@ -7,7 +7,7 @@ import { Card, CardHeader } from "@/components/ui/card";
 import { SearchInput } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
 import { TimeChart } from "@/components/natasha/charts";
-import { MONTHS_SHORT, monthLabel, usd } from "@/components/natasha/format";
+import { monthLabel, shortService, usd } from "@/components/natasha/format";
 import { MonthPicker } from "@/components/natasha/MonthPicker";
 import { ErrorNote, Kpi, KpiGrid, PageHeader, Delta, Screen, ScreenSkeleton, ShareBar } from "@/components/natasha/primitives";
 import { useOnRefreshed, useShell } from "@/components/shell/ShellContext";
@@ -15,6 +15,8 @@ import { useJson } from "@/components/useJson";
 import { useMonthParam, withMonth } from "@/components/useMonth";
 import { downloadCsv, toCsv } from "@/components/csv";
 import { cn } from "@/lib/utils";
+import { periodDays, periodText } from "./dashboard/period";
+import type { SummaryResp } from "./dashboard/types";
 
 interface CostItem { key: string; amount: number; unit: string }
 interface BillResp { range: { Start: string; End: string }; total: number; recordTotal: number; services: CostItem[]; byRecordType: CostItem[] }
@@ -23,30 +25,46 @@ type BillTab = "all" | "charges" | "credits";
 
 const COLS = "minmax(220px,1.6fr) minmax(120px,1fr) 64px 96px";
 
-function periodLabel(start: string, end: string): string {
-  const s = new Date(`${start}T00:00:00Z`);
-  const e = new Date(`${end}T00:00:00Z`);
-  const mon = MONTHS_SHORT[s.getUTCMonth()];
-  return s.getUTCMonth() === e.getUTCMonth() ? `${mon} ${s.getUTCDate()} – ${e.getUTCDate()}` : `${mon} ${s.getUTCDate()} – ${MONTHS_SHORT[e.getUTCMonth()]} ${e.getUTCDate()}`;
-}
+/** Plain names for Cost Explorer's record types. */
+const RECORD_TYPES: Record<string, string> = {
+  Usage: "Usage",
+  Tax: "Tax",
+  Credit: "Credits",
+  Refund: "Refunds",
+  Fee: "Fees",
+  Support: "Support",
+  DiscountedUsage: "Usage covered by Reserved Instances",
+  RIFee: "Reserved Instance fees",
+  SavingsPlanCoveredUsage: "Usage covered by Savings Plans",
+  SavingsPlanNegation: "Savings Plan discount",
+  SavingsPlanRecurringFee: "Savings Plan monthly fee",
+  SavingsPlanUpfrontFee: "Savings Plan upfront fee",
+  BundledDiscount: "Bundled discount",
+  PrivateRateDiscount: "Private rate discount",
+};
+const recordLabel = (key: string) => RECORD_TYPES[key] ?? key.replace(/([a-z])([A-Z])/g, "$1 $2");
+/** Anything that prints as $0.00. */
+const isZero = (amount: number) => Math.abs(amount) < 0.005;
 
 export default function Billing() {
   const month = useMonthParam();
   const { toast } = useShell();
   const { data, error, reload } = useJson<BillResp>(withMonth("/api/cost/bill", month));
   const { data: monthly, reload: reloadMonthly } = useJson<MonthlyResp>("/api/cost/monthly-total");
-  useOnRefreshed(() => { reload(); reloadMonthly(); });
+  // Same source as Home, so the comparison with the previous month is identical on both pages.
+  const { data: summary, reload: reloadSummary } = useJson<SummaryResp>(withMonth("/api/cost/summary", month));
+  useOnRefreshed(() => { reload(); reloadMonthly(); reloadSummary(); });
   const [tab, setTab] = useState<BillTab>("all");
   const [q, setQ] = useState("");
 
   const services = useMemo(() => data?.services ?? [], [data]);
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    return services.filter((s) => (tab === "charges" ? s.amount > 0 : tab === "credits" ? s.amount < 0 : true) && (!needle || s.key.toLowerCase().includes(needle)));
+    return services.filter((s) => (tab === "charges" ? s.amount > 0 : tab === "credits" ? s.amount < 0 : true) && (!needle || s.key.toLowerCase().includes(needle) || shortService(s.key).toLowerCase().includes(needle)));
   }, [services, tab, q]);
 
   const header = (
-    <PageHeader maxWidth={720} title="Billing" description="Every service line for the month plus the record-type breakdown — the complete bill, nothing truncated."
+    <PageHeader maxWidth={720} title="Billing" description="Every service line for the month and the breakdown by charge type. This is the complete bill."
       actions={<>
         <MonthPicker />
         <Button variant="primary" size="lg" onClick={() => {
@@ -61,22 +79,33 @@ export default function Billing() {
   if (error) return <Screen label="Billing">{header}<ErrorNote message={error} onRetry={reload} /></Screen>;
   if (!data) return <ScreenSkeleton />;
 
-  const history = monthly?.series ?? [];
+  const billKey = data.range.Start.slice(0, 7);
+  const current = summary?.isCurrentMonth ?? !month;
+  // The stored row for the running month lags the live bill, so the live total replaces it.
+  const history = (monthly?.series ?? []).map((p) => (current && p.month === billKey ? { ...p, amount: data.total } : p));
   const vals = history.map((p) => p.amount);
   const full = history.map((p) => monthLabel(p.month));
-  const total12 = vals.reduce((a, b) => a + b, 0);
-  const avg12 = vals.length ? total12 / vals.length : 0;
+  // Averages use finished months only: the running month would drag them down.
+  const finished = history.filter((p) => !(current && p.month === billKey));
+  const totalFull = finished.reduce((a, p) => a + p.amount, 0);
+  const avgFull = finished.length ? totalFull / finished.length : 0;
   const prevVal = vals.length >= 2 ? vals[vals.length - 2] : 0;
   const latest = vals[vals.length - 1] ?? 0;
-  const mom = prevVal > 0 ? ((latest - prevVal) / prevVal) * 100 : null;
-  const billDelta = prevVal > 0 ? ((data.total - prevVal) / prevVal) * 100 : null;
-  const charged = services.filter((s) => s.amount !== 0).length;
-  const credits = services.filter((s) => s.amount < 0).length;
-  const positive = services.filter((s) => s.amount > 0).length;
+  const latestIsRunning = current && history[history.length - 1]?.month === billKey;
+  const mom = prevVal > 0 && !latestIsRunning ? ((latest - prevVal) / prevVal) * 100 : null;
+  // Previous month: a running month is compared with the same point of it, a finished month with all of it.
+  const prev = summary?.prev;
+  const prevShown = prev ? (current ? prev.sameDayTotal ?? prev.total : prev.total) : 0;
+  const prevName = prev ? monthLabel(prev.month) : "";
+  const days = periodDays(data.range);
+  const charged = services.filter((s) => !isZero(s.amount)).length;
+  const credits = services.filter((s) => s.amount <= -0.005).length;
+  const positive = services.filter((s) => s.amount >= 0.005).length;
   const maxAbs = Math.max(1e-9, ...rows.map((r) => Math.abs(r.amount)));
   const shown = rows.reduce((a, r) => a + r.amount, 0);
   const momText = (i: number) => {
     if (i === 0 || vals[i - 1] === 0) return "First month in range";
+    if (latestIsRunning && i === vals.length - 1) return "Month in progress";
     const p = ((vals[i] - vals[i - 1]) / vals[i - 1]) * 100;
     return `${p >= 0 ? "+" : "−"}${Math.abs(p).toFixed(1)}% vs ${full[i - 1]}`;
   };
@@ -85,19 +114,19 @@ export default function Billing() {
     <Screen label="Billing">
       {header}
       <KpiGrid>
-        <Kpi label="Total bill" value={usd(data.total)} badge={billDelta != null && <Delta pct={billDelta} />}
-          footer={prevVal > 0 ? `vs ${full[full.length - 2]} · ${usd(prevVal)}` : " "} />
+        <Kpi label={current ? "Bill so far" : "Total bill"} value={usd(data.total)} badge={prev && prevShown > 0 ? <Delta pct={prev.deltaPct} /> : undefined}
+          footer={prev && prevShown > 0 ? `vs ${current ? `same point in ${prevName.slice(0, 3)}` : prevName} · ${usd(prevShown)}` : "No earlier month to compare with"} />
         <Kpi label="Service line items" value={services.length} footer={`${charged} with charges · ${services.length - charged} at $0.00`} />
-        <Kpi label="Billing period" value={periodLabel(data.range.Start, data.range.End)}
-          footer={<span className="font-mono">{data.range.Start} → {data.range.End}</span>} />
-        <Kpi label="12-month average" value={usd(avg12)} footer={`Total ${usd(total12)} · per month`} />
+        <Kpi label="Billing period" value={periodText(data.range, { year: false })}
+          footer={`${data.range.Start.slice(0, 4)} · ${days} day${days === 1 ? "" : "s"}${current ? " so far" : ""}`} />
+        <Kpi label="Monthly average" value={usd(avgFull)} footer={`${finished.length} full month${finished.length === 1 ? "" : "s"} · total ${usd(totalFull)}`} />
       </KpiGrid>
       <Card>
         <CardHeader title="12-month history" description="Monthly AWS bill · hover a month for the change" actions={
           <div className="flex flex-wrap gap-1.5">
-            <Badge size="md" className="text-fg-2">Total {usd(total12)}</Badge>
-            <Badge size="md" className="text-fg-2">Avg {usd(avg12)}/mo</Badge>
-            {mom != null && <Badge size="md" tone={mom <= 0 ? "var(--success)" : "var(--danger)"}>Latest {usd(latest)} · {mom <= 0 ? "−" : "+"}{Math.abs(mom).toFixed(1)}% MoM</Badge>}
+            <Badge size="md" className="text-fg-2">Average {usd(avgFull)} a month</Badge>
+            {latestIsRunning && <Badge size="md" className="text-fg-2">{full[full.length - 1]} so far {usd(latest)}</Badge>}
+            {mom != null && <Badge size="md" tone={mom <= 0 ? "var(--success)" : "var(--danger)"}>Latest {usd(latest)} · {mom <= 0 ? "−" : "+"}{Math.abs(mom).toFixed(1)}% on the month before</Badge>}
           </div>} />
         <div className="p-5">
           <TimeChart labels={full.map((m) => m.slice(0, 3))} full={full} area height={240} ticks={12} extra={momText} empty="No monthly history yet."
@@ -126,11 +155,11 @@ export default function Billing() {
                 <span>Service</span><span>Share</span><span className="text-right">Of bill</span><span className="text-right">Cost</span>
               </div>
               {rows.map((r) => (
-                <div key={r.key} className={cn("grid min-h-[42px] items-center gap-4 border-0 border-b border-solid border-border px-5 text-[13px] hover:bg-hover", r.amount === 0 && "opacity-55")} style={{ gridTemplateColumns: COLS }}>
-                  <span className="truncate">{r.key}</span>
-                  <ShareBar pct={r.amount === 0 ? 0 : Math.max(0.8, (Math.abs(r.amount) / maxAbs) * 100)} />
+                <div key={r.key} className={cn("grid min-h-[42px] items-center gap-4 border-0 border-b border-solid border-border px-5 text-[13px] hover:bg-hover", isZero(r.amount) && "opacity-55")} style={{ gridTemplateColumns: COLS }}>
+                  <span className="truncate" title={r.key}>{shortService(r.key)}</span>
+                  <ShareBar pct={isZero(r.amount) ? 0 : Math.max(0.8, (Math.abs(r.amount) / maxAbs) * 100)} />
                   <span className="text-right text-[12.5px] text-muted-foreground tnum">
-                    {r.amount === 0 || data.total === 0 ? "—" : (r.amount / data.total) * 100 < 0.1 && r.amount > 0 ? "<0.1%" : `${((r.amount / data.total) * 100).toFixed(1)}%`}
+                    {isZero(r.amount) || data.total === 0 ? "—" : (r.amount / data.total) * 100 < 0.1 && r.amount > 0 ? "<0.1%" : `${((r.amount / data.total) * 100).toFixed(1)}%`}
                   </span>
                   <span className="text-right font-medium tnum">{usd(r.amount)}</span>
                 </div>
@@ -150,12 +179,12 @@ export default function Billing() {
           </div>
         </Card>
         <Card className="min-w-0 flex-[1_1_300px]">
-          <CardHeader title="By record type" description="Reconciles to the net total" className="pb-2 pt-4" />
+          <CardHeader title="By charge type" description="Adds up to the net total" className="pb-2 pt-4" />
           <div className="flex flex-col px-5 pb-4 pt-1 text-[13px]">
             {data.byRecordType.map((r) => (
-              <div key={r.key} className={cn("flex justify-between gap-3 border-0 border-b border-solid border-border py-2.5", r.amount === 0 && "text-muted-foreground")}>
-                <span>{r.key}</span>
-                <span className={cn("tnum", r.amount !== 0 && "font-medium", r.amount < 0 && "text-success")}>{usd(r.amount)}</span>
+              <div key={r.key} className={cn("flex justify-between gap-3 border-0 border-b border-solid border-border py-2.5", isZero(r.amount) && "text-muted-foreground")}>
+                <span title={r.key}>{recordLabel(r.key)}</span>
+                <span className={cn("tnum", !isZero(r.amount) && "font-medium", r.amount <= -0.005 && "text-success")}>{usd(r.amount)}</span>
               </div>
             ))}
             <div className="flex justify-between gap-3 pb-0.5 pt-3.5 text-[14px] font-semibold"><span>Net total</span><span className="tnum">{usd(data.recordTotal)}</span></div>

@@ -118,7 +118,8 @@ export function buildEsIssues(m: Base, x: EsRuleExtras): EsIssue[] {
     add("warning", "Cluster changes are backing up", `Up to ${f0(pending.max)} cluster tasks pending.`, "The master node is slow to apply changes.");
   }
   if (m.restarts != null && m.restarts > 0) {
-    add("info", "Elasticsearch restarted", `${f0(m.restarts)} restart(s) in the last ${hrs}h.`, "Check whether this was planned.");
+    const span = hrs >= 48 && hrs % 24 === 0 ? `${hrs / 24} days` : `${hrs} hours`;
+    add("info", "Elasticsearch restarted", `Restarted ${m.restarts === 1 ? "once" : `${f0(m.restarts)} times`} in the last ${span}.`, "Check whether this was planned.");
   }
   return out.sort((a, b) => ORDER[a.severity] - ORDER[b.severity]);
 }

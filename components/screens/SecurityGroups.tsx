@@ -1,27 +1,29 @@
 "use client";
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { ChevronRight, RefreshCw, ShieldAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { SearchInput } from "@/components/ui/input";
+import { ago } from "@/components/natasha/format";
 import { Banner, Dot, ErrorNote, Kpi, KpiGrid, PageHeader, Screen, ScreenSkeleton } from "@/components/natasha/primitives";
 import { useShell } from "@/components/shell/ShellContext";
 import { useJson } from "@/components/useJson";
 import { cn, tint } from "@/lib/utils";
 
 interface SgRule { direction: "in" | "out"; protocol: string; fromPort: number | null; toPort: number | null; cidr: string[]; cidr6: string[]; sgSources: string[]; description: string | null; flags: string[] }
-interface Sg { id: string; name: string; description: string; vpcId: string | null; region: string; inbound: SgRule[]; outbound: SgRule[]; attachedEniCount: number; attachedInstanceIds: string[]; flags: string[]; worstFlag: "wide-open" | "risky" | "unused" | null }
+interface Sg { id: string; name: string; description: string; vpcId: string | null; region: string; inbound: SgRule[]; outbound: SgRule[]; attachedEniCount: number; attachedInstanceIds: string[]; flags: string[]; worstFlag: "wide-open" | "risky" | "unused" | null; isDefault?: boolean; referencedByCount?: number }
 interface Inventory { fetchedAt: string; regions: string[]; totalCount: number; riskyCount: number; wideOpenCount: number; unusedCount: number; groups: Sg[] }
 type Filter = "all" | "wide-open" | "risky" | "unused" | "attached";
 
 const COLS = "16px minmax(260px,1.8fr) 100px 120px 76px 76px 76px 96px";
 const RULE_LIMIT = 6;
+const PAGE_SIZE = 25;
 
 const STATUS: Record<string, { label: string; color: string }> = {
   "wide-open": { label: "Wide-open", color: "var(--danger)" },
   risky: { label: "Risky", color: "var(--warning)" },
-  unused: { label: "Unused", color: "var(--muted-fg)" },
+  unused: { label: "Not attached", color: "var(--muted-fg)" },
   attached: { label: "Attached", color: "var(--success)" },
 };
 
@@ -78,6 +80,8 @@ export default function SecurityGroups() {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
+  const [page, setPage] = useState(0);
+  useEffect(() => { setPage(0); }, [filter, q]);
 
   const inv = data?.inventory;
   const statusOf = (g: Sg) => g.worstFlag ?? "attached";
@@ -104,7 +108,7 @@ export default function SecurityGroups() {
 
   const header = (
     <PageHeader title="Security Groups"
-      description={inv ? `AWS · ${inv.totalCount} security groups across ${inv.regions.length} regions · last fetched ${new Date(inv.fetchedAt).toLocaleTimeString()}` : "AWS security groups across every region"}
+      description={inv ? `AWS · ${inv.totalCount} security groups across ${inv.regions.length} regions · checked ${ago(inv.fetchedAt)}` : "AWS security groups across every region"}
       actions={<Button variant="primary" size="lg" className="px-3.5" disabled={busy} onClick={() => void refresh()}><RefreshCw size={14} className={cn("block", busy && "animate-nt-spin")} />Refresh</Button>} />
   );
   if (error) return <Screen label="Security Groups">{header}<ErrorNote message={error} onRetry={reload} /></Screen>;
@@ -113,8 +117,18 @@ export default function SecurityGroups() {
   const attached = groups.filter((g) => statusOf(g) === "attached").length;
   const chips: Array<[Filter, string, number, string | null]> = [
     ["all", "All", inv.totalCount, null], ["wide-open", "Wide-open", inv.wideOpenCount, "var(--danger)"], ["risky", "Risky", inv.riskyCount, "var(--warning)"],
-    ["unused", "Unused", inv.unusedCount, null], ["attached", "Attached", attached, null],
+    ["unused", "Not attached", inv.unusedCount, null], ["attached", "Attached", attached, null],
   ];
+
+  const pages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  const current = Math.min(page, pages - 1);
+  const start = current * PAGE_SIZE;
+  const shown = list.slice(start, start + PAGE_SIZE);
+  const unusedNote = (g: Sg) => (g.isDefault
+    ? "AWS default group for its network. It is not attached to anything, but AWS does not allow deleting it."
+    : g.referencedByCount
+      ? `Not attached to any resource, but ${g.referencedByCount} other ${g.referencedByCount === 1 ? "group refers" : "groups refer"} to it in their rules. Review those before removing it in the AWS console.`
+      : "Not attached to any resource. Review before deleting it in the AWS console; Natasha is read-only.");
 
   return (
     <Screen label="Security Groups">
@@ -122,8 +136,8 @@ export default function SecurityGroups() {
       <KpiGrid>
         <Kpi label="Total groups" value={inv.totalCount} footer={`Across ${inv.regions.length} regions`} />
         <Kpi label="Wide-open" value={inv.wideOpenCount} valueColor={inv.wideOpenCount ? "var(--danger)" : "var(--success)"} footer="0.0.0.0/0 on all ports" />
-        <Kpi label="Risky" value={inv.riskyCount} valueColor={inv.riskyCount ? "var(--warning)" : "var(--success)"} footer="SSH or DB port open to the world" />
-        <Kpi label="Unused" value={inv.unusedCount} footer="Not attached · safe to delete" />
+        <Kpi label="Risky" value={inv.riskyCount} valueColor={inv.riskyCount ? "var(--warning)" : "var(--success)"} footer="Sensitive port reachable from the internet" />
+        <Kpi label="Not attached" value={inv.unusedCount} footer="Not attached to any resource · review before deleting" />
       </KpiGrid>
       <Card className="overflow-hidden">
         <div className="flex flex-wrap items-center gap-2 border-0 border-b border-solid border-border px-4 py-3.5">
@@ -145,7 +159,7 @@ export default function SecurityGroups() {
             <div className="grid h-[38px] items-center gap-3.5 border-0 border-b border-solid border-border bg-card-2 px-5 text-[12px] font-medium text-muted-foreground" style={{ gridTemplateColumns: COLS }}>
               <span /><span>Group</span><span>Region</span><span>VPC</span><span className="text-right">Inbound</span><span className="text-right">Outbound</span><span className="text-right">Attached</span><span>Status</span>
             </div>
-            {list.map((g) => {
+            {shown.map((g) => {
               const isOpen = !!open[g.id];
               const st = STATUS[statusOf(g)];
               const risk = riskText(g);
@@ -175,7 +189,7 @@ export default function SecurityGroups() {
                         <RuleCard title="Inbound rules" rules={g.inbound} empty="No inbound rules." />
                         <RuleCard title="Outbound rules" rules={g.outbound} empty="No outbound rules." />
                       </div>
-                      {statusOf(g) === "unused" && <div className="text-[12.5px] text-muted-foreground">Not attached to any network interface. Natasha is read-only — delete it from the AWS console.</div>}
+                      {statusOf(g) === "unused" && <div className="text-[12.5px] text-muted-foreground">{unusedNote(g)}</div>}
                       {g.attachedInstanceIds.length > 0 && <div className="text-[12.5px] text-muted-foreground">Attached to <span className="font-mono text-fg-2">{g.attachedInstanceIds.join(", ")}</span></div>}
                     </div>
                   )}
@@ -185,7 +199,16 @@ export default function SecurityGroups() {
             {list.length === 0 && <div className="px-5 py-11 text-center text-[13px] text-muted-foreground">No security groups match these filters.</div>}
           </div>
         </div>
-        <div className="px-5 pb-3.5 pt-3 text-[12.5px] text-muted-foreground tnum">Showing {list.length} of {inv.totalCount} groups</div>
+        <div className="flex flex-wrap items-center justify-between gap-3 px-5 pb-3.5 pt-3 text-[12.5px] text-muted-foreground tnum">
+          <span>{list.length === 0 ? "Showing 0 groups" : `Showing ${start + 1}–${start + shown.length} of ${list.length} groups`}{list.length !== inv.totalCount && ` · ${inv.totalCount} in total`}</span>
+          {pages > 1 && (
+            <span className="flex items-center gap-2">
+              <Button size="xs" disabled={current === 0} onClick={() => setPage(current - 1)}>Previous</Button>
+              <span>Page {current + 1} of {pages}</span>
+              <Button size="xs" disabled={current >= pages - 1} onClick={() => setPage(current + 1)}>Next</Button>
+            </span>
+          )}
+        </div>
       </Card>
     </Screen>
   );

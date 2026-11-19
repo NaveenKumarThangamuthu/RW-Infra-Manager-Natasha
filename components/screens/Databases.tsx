@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { SearchInput } from "@/components/ui/input";
-import { num } from "@/components/natasha/format";
+import { istTime, num } from "@/components/natasha/format";
 import { Banner, Dot, ErrorNote, PageHeader, Screen, ScreenSkeleton } from "@/components/natasha/primitives";
 import { useJson } from "@/components/useJson";
 import { useShell } from "@/components/shell/ShellContext";
@@ -22,16 +22,16 @@ interface Inventory { fetchedAt: string; regions: string[]; totalInstances: numb
 type Filter = "all" | "public" | "unencrypted" | "no-backup" | "single-az" | "stopped";
 
 const FILTER_FLAG: Record<Exclude<Filter, "all">, RdsFlag> = { public: "publicly-accessible", unencrypted: "unencrypted", "no-backup": "backup-disabled", "single-az": "no-multi-az", stopped: "stopped" };
-const CONN_SCALE = 1000;
 
-function Gauge({ label, value, pct, color }: { label: string; value: string; pct: number; color: string }) {
+/** A figure with a bar; leave out pct for a figure that has no natural maximum. */
+function Gauge({ label, value, pct, color }: { label: string; value: string; pct?: number; color?: string }) {
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
       <div className="flex flex-col gap-0.5 text-[12px]">
         <span className="truncate text-muted-foreground">{label}</span>
         <span className="text-[13px] font-semibold tnum">{value}</span>
       </div>
-      <span className="block h-[5px] overflow-hidden rounded-[5px] bg-card-2"><span className="block h-full rounded-[5px]" style={{ width: `${Math.max(0, Math.min(100, pct))}%`, background: color }} /></span>
+      {pct != null && <span className="block h-[5px] overflow-hidden rounded-[5px] bg-card-2"><span className="block h-full rounded-[5px]" style={{ width: `${Math.max(0, Math.min(100, pct))}%`, background: color }} /></span>}
     </div>
   );
 }
@@ -64,7 +64,7 @@ export default function Databases() {
   };
 
   const header = (
-    <PageHeader title="Databases" description={inv ? `Amazon RDS · ${inv.totalInstances} instance${inv.totalInstances === 1 ? "" : "s"} across ${inv.regions.length} regions · last fetched ${new Date(inv.fetchedAt).toLocaleTimeString()}` : "Amazon RDS"}
+    <PageHeader title="Databases" description={inv ? `Amazon RDS · ${inv.totalInstances} instance${inv.totalInstances === 1 ? "" : "s"} across ${inv.regions.length} regions · last fetched ${istTime(inv.fetchedAt)} IST` : "Amazon RDS"}
       actions={<Button variant="primary" size="lg" className="px-3.5" disabled={busy} onClick={() => void refresh()}><RefreshCw size={14} className={cn("block", busy && "animate-nt-spin")} />Refresh</Button>} />
   );
   if (error) return <Screen label="Databases">{header}<ErrorNote message={error} onRetry={reload} /></Screen>;
@@ -130,9 +130,9 @@ export default function Databases() {
                 </div>
               </div>
               <div className="grid min-w-0 flex-[0_1_440px] grid-cols-3 gap-5 text-foreground">
-                <Gauge label="CPU" value={cpu != null ? `${cpu.toFixed(1)}%` : "—"} pct={cpu ?? 0} color={load(cpu ?? 0)} />
-                <Gauge label="Connections" value={conns != null ? num(conns) : "—"} pct={((conns ?? 0) / CONN_SCALE) * 100} color="var(--info)" />
-                <Gauge label="Storage" value={used != null ? `${used.toFixed(1)}%` : "—"} pct={used ?? 0} color={load(used ?? 0)} />
+                <Gauge label="CPU · avg" value={cpu != null ? `${cpu.toFixed(1)}%` : "—"} pct={cpu ?? 0} color={load(cpu ?? 0)} />
+                <Gauge label="Connections · avg" value={conns != null ? num(conns) : "—"} />
+                <Gauge label="Storage used" value={used != null ? `${used.toFixed(1)}%` : "—"} pct={used ?? 0} color={load(used ?? 0)} />
               </div>
               <span className="absolute right-5 top-1/2 -mt-[7px] text-muted-foreground"><ChevronRight size={14} className="block" /></span>
             </Link>

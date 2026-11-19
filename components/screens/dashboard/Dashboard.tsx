@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Sparkline } from "@/components/natasha/charts";
-import { monthLabel, num, usd } from "@/components/natasha/format";
+import { isStale, istDate, istDateTime, monthLabel, num, usd } from "@/components/natasha/format";
 import { MonthPicker } from "@/components/natasha/MonthPicker";
 import { Banner, Delta, ErrorNote, KpiGrid, PageHeader, Screen, ScreenSkeleton } from "@/components/natasha/primitives";
 import { useOnRefreshed } from "@/components/shell/ShellContext";
@@ -17,6 +17,7 @@ import { useMonthParam, withMonth } from "@/components/useMonth";
 import { CategoryDaily, CostSplit, MonthlyHistoryCard, TransferTrendCard } from "./CostCharts";
 import { CostAnomalies, DailySpend, RecentActivity, TopTable } from "./ActivityCards";
 import { HealthPanel } from "./HealthPanel";
+import { periodText } from "./period";
 import type { MonthlyTotalResp, SummaryResp } from "./types";
 
 function greeting(h: number): string {
@@ -56,35 +57,23 @@ function DashKpi({ label, badge, value, footer, children }: { label: string; bad
   );
 }
 
-function backtestError(series: number[]): number | null {
-  const recent = series.slice(-6);
-  if (recent.length < 3) return null;
-  const errs: number[] = [];
-  for (let i = 2; i < recent.length; i++) {
-    const w = recent.slice(Math.max(0, i - 3), i);
-    const f = w.reduce((a, b) => a + b, 0) / w.length;
-    if (f > 0) errs.push(Math.abs(recent[i] - f) / f);
+/** Average month-over-month change across the last six finished months, as a percentage. */
+function monthlySwing(full: number[]): { pct: number | null; months: number[] } {
+  const months = full.slice(-7);
+  const changes: number[] = [];
+  for (let i = 1; i < months.length; i++) {
+    if (months[i - 1] > 0) changes.push(Math.abs(months[i] - months[i - 1]) / months[i - 1]);
   }
-  return errs.length ? (errs.reduce((a, b) => a + b, 0) / errs.length) * 100 : null;
+  return { pct: changes.length >= 2 ? (changes.reduce((a, b) => a + b, 0) / changes.length) * 100 : null, months };
 }
 
-function VarianceKpi({ monthly }: { monthly: MonthlyTotalResp | null }) {
-  const vals = monthly?.series.map((p) => p.amount) ?? [];
-  const err = backtestError(vals);
-  const conf = err == null ? null : err > 25 ? "Low" : err > 12 ? "Medium" : "High";
-  const color = conf === "Low" ? "var(--warning)" : conf === "Medium" ? "var(--info)" : "var(--success)";
+function SwingKpi({ fullMonths }: { fullMonths: number[] }) {
+  const { pct, months } = monthlySwing(fullMonths);
+  const compared = Math.max(0, months.length - 1);
   return (
-    <DashKpi label="Forecast variance" value={err == null ? "—" : `±${err.toFixed(1)}%`}
-      badge={conf ? <Badge tone={color}>{conf} confidence</Badge> : undefined}
-      footer={err == null ? `Needs 3+ months — have ${vals.length}` : `Typical MoM · 3-MA back-test · ${Math.min(6, vals.length)} mo`}>
-      <div className="flex flex-col gap-1.5">
-        <div className="grid grid-cols-3 gap-1">
-          {["Low", "Medium", "High"].map((l) => <span key={l} className="h-1.5 rounded-[3px]" style={{ background: l === conf ? color : "var(--card-2)" }} />)}
-        </div>
-        <div className="grid grid-cols-3 gap-1 text-[11px] text-muted-foreground">
-          {["Low", "Medium", "High"].map((l) => <span key={l} style={l === conf ? { color, fontWeight: 500 } : undefined}>{l}</span>)}
-        </div>
-      </div>
+    <DashKpi label="Month-to-month swing" value={pct == null ? "—" : `±${pct.toFixed(1)}%`}
+      footer={pct == null ? "Needs at least three finished months" : `Average change over the last ${compared} full month${compared === 1 ? "" : "s"}`}>
+      <Sparkline values={months} color="var(--info)" />
     </DashKpi>
   );
 }
@@ -99,44 +88,57 @@ export default function Dashboard() {
   const { data: ops } = useSummary();
   useOnRefreshed(() => { reload(); reloadMonthly(); });
 
-  const header = (
-    <PageHeader maxWidth={100000} eyebrow={hello.date} title={hello.title}
-      description="Infra at a glance — GitHub security, Spring services, Lambda — and your AWS spend below."
-      actions={<MonthPicker />} />
-  );
+  const header = <PageHeader maxWidth={100000} eyebrow={hello.date} title={hello.title} actions={<MonthPicker />} />;
 
   if (error) return <Screen label="Dashboard">{header}<ErrorNote message={error} onRetry={reload} /></Screen>;
   if (!data) return <ScreenSkeleton />;
 
+  const current = data.isCurrentMonth;
   const prevLabel = data.prev ? monthLabel(data.prev.month) : "";
+  // The current month is compared with the same point of the previous one, never with a whole month.
+  const versus = prevLabel ? (current ? `same point in ${prevLabel.slice(0, 3)}` : prevLabel) : "";
+  const prevShown = data.prev ? (current ? data.prev.sameDayTotal ?? data.prev.total : data.prev.total) : 0;
   const projDelta = data.projectedMonth != null && data.prev && data.prev.total > 0
     ? ((data.projectedMonth - data.prev.total) / data.prev.total) * 100 : null;
+  const partialDays = current ? data.partialDays ?? 0 : 0;
   const trend = data.trend.map((t) => t.amount);
+  const completeTrend = partialDays ? trend.slice(0, -partialDays) : trend;
   let run = 0;
   const cumulative = trend.map((v) => (run += v));
-  const monthlyVals = monthly?.series.map((p) => p.amount) ?? [];
-  const forecastSpark = data.projectedMonth != null ? [...monthlyVals.slice(-5, -1), data.projectedMonth] : monthlyVals.slice(-5);
+  // The stored row for the running month lags the live figure, so the live total replaces it.
+  const liveKey = data.range.Start.slice(0, 7);
+  const monthlySeries = (monthly?.series ?? []).map((p) => (current && p.month === liveKey ? { ...p, amount: data.mtdTotal } : p));
+  const fullMonths = monthlySeries.filter((p) => !(current && p.month === liveKey)).map((p) => p.amount);
+  const forecastSpark = data.projectedMonth != null ? [...fullMonths.slice(-4), data.projectedMonth] : fullMonths.slice(-5);
   const f = ops?.github.findings;
   const crit = (f?.CRIT ?? 0) > 0;
+  const high = (f?.HIGH ?? 0) > 0;
+  const springErrors = ops && !isStale(ops.spring.lastLogsSnap) ? ops.spring.servicesWithErrors : 0;
+  const lambdaStale = !ops || isStale(ops.lambda.lastSnap);
+  const lambdaErrors = ops?.lambda.errors24h ?? 0;
+  const topDescription = `${current ? "Month-to-date" : "Total for month"}${versus ? ` · change vs ${versus}` : ""}`;
+  const asOfDay = (iso: string | null) => istDate(iso).replace(/ \d{4}$/, "");
 
   return (
     <Screen label="Dashboard">
       {header}
       {data.stale && (
         <Banner tone="var(--warning)">
-          AWS session expired — showing the last saved data{data.asOf ? ` from ${new Date(data.asOf).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })} IST` : ""}. Daily trend and forecast need a live connection.
+          AWS session expired. Showing the last saved data{data.asOf ? ` from ${istDateTime(data.asOf)}` : ""}. The daily trend and the forecast need a live connection.
         </Banner>
       )}
-      {ops && (crit || ops.spring.servicesWithErrors > 0 || ops.lambda.errors24h > 0) && (
+      {ops && (crit || high || springErrors > 0 || (lambdaErrors > 0 && !lambdaStale)) && (
         <div className="flex flex-wrap items-center gap-3 rounded-[12px] border border-solid py-3 pl-4 pr-3.5"
           style={{ borderColor: "color-mix(in oklab, var(--danger) 30%, var(--border))", background: "color-mix(in oklab, var(--danger) 6%, var(--card))" }}>
           <span className="h-2 w-2 shrink-0 rounded-[8px] bg-danger animate-nt-pulse" />
           <span className="text-[14px] font-semibold">{crit ? "Critical attention needed" : "Attention needed"}</span>
           <div className="flex flex-wrap gap-1.5">
-            {crit && <Badge tone="var(--danger)" className="px-2">{num(f!.CRIT)} CRIT findings</Badge>}
-            {(f?.HIGH ?? 0) > 0 && <Badge tone="var(--orange)" className="px-2">{num(f!.HIGH)} HIGH findings</Badge>}
-            {ops.spring.servicesWithErrors > 0 && <Badge tone="var(--warning)" className="px-2">{ops.spring.servicesWithErrors} services with errors</Badge>}
-            {ops.lambda.errors24h > 0 && <Badge tone="var(--warning)" className="px-2">{num(ops.lambda.errors24h)} Lambda errors (24h)</Badge>}
+            {crit && <Badge tone="var(--danger)" className="px-2">{num(f!.CRIT)} critical findings</Badge>}
+            {high && <Badge tone="var(--orange)" className="px-2">{num(f!.HIGH)} high findings</Badge>}
+            {springErrors > 0 && <Badge tone="var(--warning)" className="px-2">{springErrors} service{springErrors === 1 ? "" : "s"} with errors</Badge>}
+            {lambdaErrors > 0 && (lambdaStale
+              ? <Badge className="px-2 text-fg-2">{num(lambdaErrors)} Lambda errors as of {asOfDay(ops.lambda.lastSnap)}</Badge>
+              : <Badge tone="var(--warning)" className="px-2">{num(lambdaErrors)} Lambda errors in 24 h</Badge>)}
           </div>
           <Button asChild size="sm" className="ml-auto">
             <Link href="/incidents" className="no-underline">Review alerts<ArrowRight size={14} className="block" /></Link>
@@ -144,44 +146,46 @@ export default function Dashboard() {
         </div>
       )}
       <KpiGrid>
-        <DashKpi label={data.isCurrentMonth ? "Month-to-date" : "Total for month"} value={usd(data.mtdTotal)}
-          badge={data.prev ? <Delta pct={data.prev.deltaPct} /> : undefined}
-          footer={data.prev ? `vs ${prevLabel} · ${usd(data.prev.total)}` : " "}>
+        <DashKpi label={current ? "Month-to-date" : "Total for month"} value={usd(data.mtdTotal, 0)}
+          badge={data.prev && prevShown > 0 ? <Delta pct={data.prev.deltaPct} /> : undefined}
+          footer={data.prev && prevShown > 0 ? `vs ${versus} · ${usd(prevShown, 0)}` : " "}>
           <Sparkline values={cumulative} color="var(--success)" />
         </DashKpi>
-        <DashKpi label="Month-end forecast" value={data.projectedMonth != null ? usd(data.projectedMonth) : "—"}
+        <DashKpi label="Run-rate forecast" value={data.projectedMonth != null ? usd(data.projectedMonth, 0) : "—"}
           badge={projDelta != null ? <Delta pct={projDelta} /> : undefined}
-          footer={data.prev ? `Projected total vs ${prevLabel}` : "Projected total"}>
-          <Sparkline values={forecastSpark} color="var(--danger)" />
+          footer={!current ? "Applies to the current month only" : data.projectedMonth == null ? "Needs a full day of spend"
+            : `Month-end at the last 7 days' pace${data.prev && data.prev.total > 0 ? ` · ${prevLabel.slice(0, 3)} was ${usd(data.prev.total, 0)}` : ""}`}>
+          <Sparkline values={forecastSpark} color={projDelta != null && projDelta > 0 ? "var(--danger)" : "var(--success)"} />
         </DashKpi>
-        <DashKpi label="Average per day" value={usd(data.avgPerDay)}
-          badge={<Badge>{trend.length} days</Badge>} footer={`Last 7 days · ${usd(data.last7)}`}>
-          <Sparkline values={trend} color="var(--c20)" />
+        <DashKpi label="Average per day" value={usd(data.avgPerDay, 0)}
+          badge={<Badge>{data.completeDays ?? completeTrend.length} full day{(data.completeDays ?? completeTrend.length) === 1 ? "" : "s"}</Badge>}
+          footer={current ? `Last 7 full days · ${usd(data.last7, 0)}` : `Last 7 days · ${usd(data.last7, 0)}`}>
+          <Sparkline values={completeTrend} color="var(--c20)" />
         </DashKpi>
-        <VarianceKpi monthly={monthly} />
+        <SwingKpi fullMonths={fullMonths} />
       </KpiGrid>
       {ops && <HealthPanel s={ops} />}
       <CategoryDaily />
       <div className={TWO_UP}>
         <CostSplit />
-        <DailySpend trend={data.trend} partial={data.isCurrentMonth} />
+        <DailySpend trend={data.trend} partialDays={partialDays} />
       </div>
       <div className={TWO_UP}>
         <CostAnomalies />
         <RecentActivity />
       </div>
       <div className={TWO_UP}>
-        <TopTable title="Top services" nameLabel="Service" rows={data.topServices} description={`Month-to-date${prevLabel ? ` · Δ vs ${prevLabel}` : ""}`} />
-        <TopTable title="Top regions" nameLabel="Region" mono rows={data.topRegions} description={`Month-to-date${prevLabel ? ` · Δ vs ${prevLabel}` : ""}`} />
+        <TopTable title="Top services" nameLabel="Service" rows={data.topServices} description={topDescription} />
+        <TopTable title="Top regions" nameLabel="Region" mono rows={data.topRegions} description={topDescription} />
       </div>
       <div className={TWO_UP}>
-        <MonthlyHistoryCard data={monthly} />
+        <MonthlyHistoryCard data={monthly ? { series: monthlySeries } : null} />
         <TransferTrendCard />
       </div>
       <div className="text-[12.5px] text-muted-foreground">
-        Period <span className="font-mono">{data.range.Start} → {data.range.End}</span> · AWS Cost Explorer
-        {data.isCurrentMonth && data.forecastRest == null && " · Forecast unavailable — Cost Explorer needs more history."}
-        {!data.isCurrentMonth && " · Past month — forecast does not apply."}
+        Period {periodText(data.range)} · AWS Cost Explorer
+        {current && partialDays > 0 && ` · AWS is still reporting the last ${partialDays} days, so they are left out of the daily average and the forecast.`}
+        {!current && " · Past month, so no forecast."}
       </div>
     </Screen>
   );

@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
 import { downloadCsv, toCsv } from "@/components/csv";
 import { BarChart } from "@/components/natasha/charts";
-import { CATEGORY_META, MONTHS_SHORT, usd } from "@/components/natasha/format";
+import { CATEGORY_META, dayLabel, istDateTime, usd } from "@/components/natasha/format";
 import { Delta, EmptyState, ErrorNote, Kpi, KpiGrid, PageHeader, Screen, Skeleton } from "@/components/natasha/primitives";
 import { useOnRefreshed, useShell } from "@/components/shell/ShellContext";
 import { useJson } from "@/components/useJson";
@@ -28,8 +28,7 @@ interface Resp {
   snapshotAt: string | null;
 }
 
-const COLS = "minmax(250px,1.8fr) 84px 84px minmax(110px,1fr) 72px 60px 60px 60px 84px";
-const dLabel = (iso: string) => { const d = new Date(`${iso}T00:00:00Z`); return `${MONTHS_SHORT[d.getUTCMonth()]} ${d.getUTCDate()}`; };
+const COLS = "minmax(250px,1.8fr) 84px 84px minmax(110px,1fr) 72px 64px 60px 60px 84px";
 
 function Tabs({ active }: { active: string }) {
   return (
@@ -65,7 +64,7 @@ export default function Categories() {
   return (
     <Screen label="Categories">
       <PageHeader title="Categories"
-        description={<span className="tnum">{data ? `${data.category} · ${data.summary.serverCount} server${data.summary.serverCount === 1 ? "" : "s"} · 14-day spend ${usd(data.summary.total14d)} · current month ${usd(data.summary.monthly.current)}` : category}</span>}
+        description={<span className="tnum">{data ? `${data.category} · ${data.summary.serverCount} server${data.summary.serverCount === 1 ? "" : "s"} · ${usd(data.summary.total14d)} in the last 14 days` : category}</span>}
         actions={<>
           <Button asChild size="lg"><Link href="/ec2" className="no-underline"><Server size={14} className="block" />Open in EC2</Link></Button>
           <Button variant="primary" size="lg" disabled={!roster.length} onClick={() => {
@@ -83,8 +82,10 @@ export default function Categories() {
       {data && (
         <>
           <KpiGrid>
-            <Kpi label="Current month" value={usd(data.summary.monthly.current)} badge={<Delta pct={data.summary.monthly.deltaPct} />} footer={`vs ${data.prevMonth} · ${usd(data.summary.monthly.previous)}`} />
-            <Kpi label="14-day spend" value={usd(data.summary.total14d)} footer={`Across ${roster.length} instance${roster.length === 1 ? "" : "s"}`} />
+            <Kpi label="Last 14 days · compute and transfer" value={usd(data.summary.monthly.current)}
+              badge={data.summary.monthly.previous > 0 ? <Delta pct={data.summary.monthly.deltaPct} /> : undefined}
+              footer={data.summary.monthly.previous > 0 ? `vs the 14 days a month earlier · ${usd(data.summary.monthly.previous)}` : "No earlier period to compare with yet"} />
+            <Kpi label="Last 14 days · all server costs" value={usd(data.summary.total14d)} footer={`${roster.length} instance${roster.length === 1 ? "" : "s"} · adds disks and Elastic IPs`} />
             <Kpi label="Servers in this category" value={data.summary.serverCount} footer={<span className="font-mono">{regions.join(" · ") || "—"}</span>} />
             <Kpi label="Average cost per server" value={usd(data.summary.total14d / Math.max(1, roster.length))} footer="Last 14 days" />
           </KpiGrid>
@@ -109,11 +110,11 @@ export default function Categories() {
           ) : (
             <>
               <Card>
-                <CardHeader title={`Daily spend · last ${trend.length} days`}
-                  description={`${trend.length ? `${dLabel(trend[0].date)} – ${dLabel(trend[trend.length - 1].date)} · ` : ""}hover a day for the amount`}
+                <CardHeader title={`Daily spend · last ${trend.length} full day${trend.length === 1 ? "" : "s"}`}
+                  description={`${trend.length ? `${dayLabel(trend[0].date)} – ${dayLabel(trend[trend.length - 1].date)} · ` : ""}hover a day for the amount`}
                   actions={<Badge size="md" className="text-fg-2"><span className="h-[7px] w-[7px] rounded-[7px]" style={{ background: color }} />{category} only</Badge>} />
                 <div className="p-5">
-                  <BarChart labels={trend.map((t) => dLabel(t.date))} full={trend.map((t) => new Date(`${t.date}T00:00:00Z`).toUTCString().slice(0, 16))} values={trend.map((t) => t.amount)} color={color} height={220} />
+                  <BarChart labels={trend.map((t) => dayLabel(t.date))} full={trend.map((t) => `${dayLabel(t.date)} ${t.date.slice(0, 4)}`)} values={trend.map((t) => t.amount)} color={color} height={220} />
                 </div>
               </Card>
               <Card className="overflow-hidden">
@@ -122,7 +123,7 @@ export default function Categories() {
                   <div className="min-w-[1000px]">
                     <div className="grid h-[38px] items-center gap-3.5 border-0 border-y border-solid border-border bg-card-2 px-5 text-[12px] font-medium text-muted-foreground" style={{ gridTemplateColumns: COLS }}>
                       <span>Instance</span><span>Type</span><span>Region</span><span>14-day share</span>
-                      <span className="text-right">Compute</span><span className="text-right">DT</span><span className="text-right">EBS</span><span className="text-right">EIP</span><span className="text-right">Total 14d</span>
+                      <span className="text-right">Compute</span><span className="text-right">Transfer</span><span className="text-right">EBS</span><span className="text-right">EIP</span><span className="text-right">Total 14d</span>
                     </div>
                     {roster.map((r) => (
                       <div key={r.matchKey} className={cn("grid min-h-[52px] items-center gap-3.5 border-0 border-b border-solid border-border px-5 py-1.5 text-[13px] hover:bg-hover", r.cost14d === 0 && "opacity-55")} style={{ gridTemplateColumns: COLS }}>
@@ -145,7 +146,7 @@ export default function Categories() {
                 </div>
                 {data.snapshotAt && (
                   <div className="border-0 border-t border-solid border-border px-5 pb-4 pt-3 text-[12.5px] text-muted-foreground">
-                    Per-instance costs from the snapshot taken {new Date(data.snapshotAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true })} IST.
+                    Per-instance costs as of {istDateTime(data.snapshotAt)}.
                   </div>
                 )}
               </Card>

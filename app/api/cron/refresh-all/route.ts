@@ -15,6 +15,7 @@ import {
 } from "@/lib/snapshotFetchers";
 import { listRepos, resolveScanBranches, type GitHubRepo } from "@/lib/github";
 import { readToken } from "@/lib/githubVault";
+import { archiveVanishedRepos, REPO_LIST_LIMIT, type ListedRepo } from "@/lib/repoSync";
 import { sendCronSummary } from "@/lib/notify";
 
 export const dynamic = "force-dynamic";
@@ -52,16 +53,23 @@ async function refreshAllSnapshots(refreshedBy: string) {
   }));
 }
 
-async function syncReposForUser(email: string) {
+/** One person's complete GitHub listing, kept so vanished repos can be worked out afterwards. */
+interface UserListing { repos: ListedRepo[]; complete: boolean }
+
+async function syncReposForUser(email: string, listings: UserListing[]) {
   const t0 = Date.now();
   const t = await readToken(email);
   if (!t) return { user: email, ok: false, error: "no token" };
   let all: GitHubRepo[];
   try {
-    all = await listRepos(t.token, 500);
+    all = await listRepos(t.token, REPO_LIST_LIMIT);
   } catch (err) {
     return { user: email, ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+  listings.push({
+    repos: all.map((r) => ({ fullName: r.full_name, owner: r.owner.login })),
+    complete: all.length < REPO_LIST_LIMIT,
+  });
   const branches = await resolveScanBranches(
     t.token,
     all.map((r) => ({ owner: r.owner.login, name: r.name, default_branch: r.default_branch })),
@@ -104,9 +112,27 @@ async function syncAllRepos() {
     where: { revokedAt: null },
     select: { userEmail: true },
   });
-  return Promise.all(connections.map((c) => syncReposForUser(c.userEmail).catch((err) => ({
+  const listings: UserListing[] = [];
+  const results = await Promise.all(connections.map((c) => syncReposForUser(c.userEmail, listings).catch((err) => ({
     user: c.userEmail, ok: false, error: err instanceof Error ? err.message : String(err),
   }))));
+
+  // Repos that GitHub no longer lists are taken out of scan scope (never deleted).
+  // Only when every connection synced cleanly and in full: the combined listing is
+  // then everything we can see, so a row missing from it is really gone.
+  const everyoneOk = results.length > 0 && results.every((r) => r.ok) && listings.length === results.length;
+  try {
+    const vanished = await archiveVanishedRepos(
+      listings.flatMap((l) => l.repos),
+      { complete: everyoneOk && listings.every((l) => l.complete) },
+    );
+    if (vanished.archived > 0) {
+      console.log(`[repo-sync] marked ${vanished.archived} repos no longer on GitHub as archived: ${vanished.names.join(", ")}`);
+    }
+  } catch (err) {
+    console.error("[repo-sync] could not mark vanished repos:", err instanceof Error ? err.message : String(err));
+  }
+  return results;
 }
 
 export async function POST(req: Request) {

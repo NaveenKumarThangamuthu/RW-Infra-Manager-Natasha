@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { Card, CardHeader } from "@/components/ui/card";
 import { Segmented } from "@/components/ui/segmented";
 import { Donut, TimeChart } from "@/components/natasha/charts";
-import { ago, CATEGORY_META, MONTHS_SHORT, monthLabel, usd } from "@/components/natasha/format";
+import { ago, CATEGORY_META, dayLabel, monthLabel, usd } from "@/components/natasha/format";
 import { ErrorNote, Skeleton } from "@/components/natasha/primitives";
 import { useJson } from "@/components/useJson";
 import { useOnRefreshed } from "@/components/shell/ShellContext";
@@ -14,11 +14,6 @@ import type { MonthlyTotalResp } from "./types";
 interface DailyByCategoryResp { categories: string[]; series: Array<{ date: string; [k: string]: string | number }>; totals: Record<string, number>; grandTotal: number; since: string }
 const RANGES = ["7", "14", "30", "60", "90"] as const;
 type Range = (typeof RANGES)[number];
-
-const dayLabel = (iso: string) => {
-  const d = new Date(`${iso}T00:00:00Z`);
-  return `${MONTHS_SHORT[d.getUTCMonth()]} ${d.getUTCDate()}`;
-};
 
 export function CategoryDaily() {
   const [range, setRange] = useState<Range>("30");
@@ -32,7 +27,7 @@ export function CategoryDaily() {
   return (
     <Card>
       <CardHeader title="Daily spend by category" descriptionClassName="tnum"
-        description={data ? `${dates.length} days · from ${data.since} · total ${usd(data.grandTotal)}` : "Loading…"}
+        description={data ? (dates.length ? `${dates.length} full days · ${dayLabel(dates[0])} – ${dayLabel(dates[dates.length - 1])} · servers only, total ${usd(data.grandTotal)}` : "No daily cost history yet") : "Loading…"}
         actions={<Segmented value={range} onChange={setRange} options={RANGES.map((r) => ({ value: r, label: `${r}d` }))} aria-label="Date range" />} />
       <div className="flex flex-wrap gap-1.5 px-5 pt-3.5">
         {CATEGORY_META.map((c) => (
@@ -46,7 +41,7 @@ export function CategoryDaily() {
       <div className="px-5 pb-[18px] pt-4">
         {error ? <ErrorNote message={error} onRetry={reload} />
           : !data ? <Skeleton className="h-[284px]" />
-            : <TimeChart labels={dates.map(dayLabel)} full={dates.map((d) => new Date(`${d}T00:00:00Z`).toUTCString().slice(0, 16))} series={series} height={260} ticks={8} empty={dates.length ? "Select a category to plot." : "No daily cost history yet."} />}
+            : <TimeChart labels={dates.map(dayLabel)} full={dates.map((d) => `${dayLabel(d)} ${d.slice(0, 4)}`)} series={series} height={260} ticks={8} empty={dates.length ? "Select a category to plot." : "No daily cost history yet."} />}
       </div>
     </Card>
   );
@@ -60,16 +55,19 @@ export function CostSplit() {
   const { data, error, reload } = useJson<TagSplitResp>("/api/cost/tag-split");
   useOnRefreshed(reload);
   const factor = view === "mo" ? (data?.projectionFactor ?? 1) : 1;
-  const segs = CATEGORY_META.map((c) => ({ name: c.key, color: c.color, blurb: c.blurb, v: (data?.buckets.find((b) => b.category === c.key)?.amount ?? 0) * factor }));
+  const bucket = (name: string) => data?.buckets.find((b) => b.category === name)?.amount ?? 0;
+  // Spend on servers with no category tag is stored as "Unmapped": it belongs under Other.
+  const segs = CATEGORY_META.map((c) => ({ name: c.key, color: c.color, blurb: c.blurb, v: (bucket(c.key) + (c.key === "Other" ? bucket("Unmapped") : 0)) * factor }));
   const total = segs.reduce((a, b) => a + Math.max(0, b.v), 0);
+  const credits = bucket("Credits/Savings") * factor;
   return (
     <Card>
-      <CardHeader title="Cost split by category" description={`EC2 spend by tag · snapshot ${ago(data?.snapshotAt)}`}
+      <CardHeader title="Cost split by category" description={`Server spend by category · updated ${ago(data?.snapshotAt)}`}
         actions={<Segmented value={view} onChange={setView} options={[{ value: "14d", label: "Last 14 days" }, { value: "mo", label: "Expected /mo" }]} aria-label="Split period" />} />
       <div className="flex flex-wrap items-center justify-center gap-6 p-5">
         {error ? <div className="w-full"><ErrorNote message={error} onRetry={reload} /></div> : !data ? <Skeleton className="h-[176px] w-full" /> : (
           <>
-            <Donut segments={segs} total={total} label={usd(total)} sub={view === "mo" ? "EC2 by tag · expected /mo" : "EC2 by tag · 14 days"} />
+            <Donut segments={segs} total={total} label={usd(total)} sub={view === "mo" ? "Servers · expected /mo" : "Servers · 14 days"} />
             <div className="flex min-w-[240px] flex-1 flex-col">
               {segs.map((s) => (
                 <button key={s.name} type="button" onClick={() => router.push(`/tag/${encodeURIComponent(s.name)}`)}
@@ -83,6 +81,11 @@ export function CostSplit() {
                   <span className="text-right text-[13px] font-medium tnum">{usd(s.v)}</span>
                 </button>
               ))}
+              {credits < -0.005 && (
+                <div className="px-2 pt-2 text-[12px] leading-[1.5] text-muted-foreground tnum">
+                  Not included: {usd(credits)} of credits and savings, which AWS does not assign to a server.
+                </div>
+              )}
             </div>
           </>
         )}

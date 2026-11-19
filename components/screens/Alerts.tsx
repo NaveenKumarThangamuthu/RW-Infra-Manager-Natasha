@@ -11,7 +11,7 @@ import { Card } from "@/components/ui/card";
 import { SearchInput } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
 import { Sheet, SheetClose, SheetContent, SheetTitle } from "@/components/ui/sheet";
-import { ago, ageMinutes, num, usd } from "@/components/natasha/format";
+import { ago, isStale, istDateTime, num, usd } from "@/components/natasha/format";
 import { Banner, Dot, EmptyState, ErrorNote, Kpi, KpiGrid, PageHeader, Screen, ScreenSkeleton } from "@/components/natasha/primitives";
 import { useOnRefreshed, useShell } from "@/components/shell/ShellContext";
 import { useJson } from "@/components/useJson";
@@ -21,14 +21,18 @@ type IncidentType = "EC2" | "GITHUB" | "SPRING" | "CLOUDWATCH" | "PROMETHEUS" | 
 type Severity = "CRIT" | "HIGH" | "WARN" | "INFO";
 type Kind = "incident" | "rec";
 
-interface Incident { id: string; type: IncidentType; severity: Severity; title: string; source: string; detail: string | null; detectedAt: string; href: string | null }
-interface IncidentsResp { snapshotOldestAt: string | null; incidents: Incident[] }
+interface Incident { id: string; type: IncidentType; severity: Severity; title: string; source: string; detail: string | null; detectedAt: string; href: string | null; count?: number }
+/** `findings` holds the totals over every open critical and high finding; `incidents` lists only the largest groups. */
+interface IncidentsResp { snapshotOldestAt: string | null; incidents: Incident[]; findings?: { CRIT: number; HIGH: number; groups: number; listed: number; windowDays: number } }
 interface Rec { kind: string; severity: "INFO" | "WARN" | "CRIT"; message: string; targetType?: string | null; monthlyDeltaUsd?: number | null }
 interface RecsResp { fetchedAt: string; analyses: Array<{ instanceId: string; name: string; type: string; recommendations: Rec[] }> }
 
 interface Row {
   key: string; kind: Kind; sev: Severity; title: string; source: string; cat: string; icon: LucideIcon;
   detail: string | null; at: string; href: string | null; target: string | null; delta: number | null;
+  /** Findings this row stands for (repository rows are grouped by rule); 0 for everything else. */
+  findings: number;
+  instanceId: string | null;
 }
 
 const SEV: Array<{ key: Severity; label: string; color: string }> = [
@@ -63,9 +67,11 @@ const REC_META: Record<string, { label: string; icon: LucideIcon }> = {
 
 const COLS = "118px minmax(260px,1fr) 190px 84px 72px 16px";
 const ACK_KEY = "natasha-acked-alerts";
+const PAGE = 25;
+const SEV_LABEL = Object.fromEntries(SEV.map((s) => [s.key, s.label])) as Record<Severity, string>;
 
 function SevBadge({ sev }: { sev: Severity }) {
-  return <span className="inline-flex h-[22px] items-center rounded-[6px] px-[7px] text-[11.5px] font-semibold tracking-[.03em]" style={{ color: SEV_COLOR[sev], background: tint(SEV_COLOR[sev]) }}>{sev}</span>;
+  return <span className="inline-flex h-[22px] items-center rounded-[6px] px-[7px] text-[11.5px] font-semibold tracking-[.03em]" style={{ color: SEV_COLOR[sev], background: tint(SEV_COLOR[sev]) }}>{SEV_LABEL[sev]}</span>;
 }
 
 function impactText(delta: number | null): string {
@@ -89,6 +95,8 @@ export default function Alerts() {
   const [q, setQ] = useState("");
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [acked, setAcked] = useState<string[]>([]);
+  const [limit, setLimit] = useState(PAGE);
+  useEffect(() => { setLimit(PAGE); }, [tab, sev, q]);
 
   useEffect(() => {
     try { setAcked(JSON.parse(localStorage.getItem(ACK_KEY) ?? "[]")); } catch { /* storage blocked or corrupt */ }
@@ -99,7 +107,7 @@ export default function Alerts() {
     const out: Row[] = [];
     for (const i of inc.data?.incidents ?? []) {
       const m = TYPE_META[i.type] ?? { label: i.type, icon: AlertTriangle };
-      out.push({ key: `i:${i.id}`, kind: "incident", sev: i.severity, title: i.title, source: i.source, cat: m.label, icon: m.icon, detail: i.detail, at: i.detectedAt, href: i.href, target: null, delta: null });
+      out.push({ key: `i:${i.id}`, kind: "incident", sev: i.severity, title: i.title, source: i.source, cat: m.label, icon: m.icon, detail: i.detail, at: i.detectedAt, href: i.href, target: null, delta: null, findings: i.type === "GITHUB" ? i.count ?? 1 : 0, instanceId: null });
     }
     for (const a of recs.data?.analyses ?? []) {
       for (const r of a.recommendations) {
@@ -108,24 +116,45 @@ export default function Alerts() {
         out.push({
           key: `r:${a.instanceId}:${r.kind}:${r.targetType ?? ""}`, kind: "rec", sev: r.severity, title: r.message, source: `${a.name || a.instanceId} · ${a.type}`,
           cat: m.label, icon: m.icon, detail: null, at: recs.data?.fetchedAt ?? new Date().toISOString(), href: `/perf/ec2/${encodeURIComponent(a.instanceId)}`,
-          target: r.targetType ?? null, delta: r.monthlyDeltaUsd ?? null,
+          target: r.targetType ?? null, delta: r.monthlyDeltaUsd ?? null, findings: 0, instanceId: a.instanceId,
         });
       }
     }
     return out
       .filter((r) => !acked.includes(r.key))
-      .sort((a, b) => SEV_RANK[a.sev] - SEV_RANK[b.sev] || new Date(b.at).getTime() - new Date(a.at).getTime());
+      // Within a severity, live service alerts come before the long list of repository findings.
+      .sort((a, b) => SEV_RANK[a.sev] - SEV_RANK[b.sev] || Number(a.findings > 0) - Number(b.findings > 0)
+        || b.findings - a.findings || new Date(b.at).getTime() - new Date(a.at).getTime());
   }, [inc.data, recs.data, acked]);
 
+  // Findings are counted one by one from the server totals (which cover the groups not listed here),
+  // so these numbers match the sidebar badge, Home and Repositories. Everything else counts per row.
   const counts = useMemo(() => {
-    const c = { incident: 0, rec: 0, CRIT: 0, HIGH: 0, WARN: 0, INFO: 0, savings: 0 };
+    const c = { incident: 0, rec: 0, CRIT: 0, HIGH: 0, WARN: 0, INFO: 0, savings: 0, savers: 0, findings: 0, alerts: 0 };
+    const best = new Map<string, number>();
     for (const r of rows) {
+      if (r.findings > 0) continue;
       c[r.kind]++;
       c[r.sev]++;
-      if (r.delta != null && r.delta < 0) c.savings += -r.delta;
+      if (r.kind === "incident") c.alerts++;
+      // An instance often has two alternative moves (t3a or t3): only the better one can be taken.
+      if (r.instanceId && r.delta != null && r.delta < 0) best.set(r.instanceId, Math.max(best.get(r.instanceId) ?? 0, -r.delta));
     }
-    return c;
-  }, [rows]);
+    best.forEach((v) => { c.savings += v; });
+    c.savers = best.size;
+    const totals = inc.data?.findings;
+    const ackedFindings = { CRIT: 0, HIGH: 0 };
+    for (const i of inc.data?.incidents ?? []) {
+      if (i.type === "GITHUB" && acked.includes(`i:${i.id}`) && (i.severity === "CRIT" || i.severity === "HIGH")) ackedFindings[i.severity] += i.count ?? 1;
+    }
+    const crit = Math.max(0, (totals?.CRIT ?? 0) - ackedFindings.CRIT);
+    const high = Math.max(0, (totals?.HIGH ?? 0) - ackedFindings.HIGH);
+    c.CRIT += crit;
+    c.HIGH += high;
+    c.findings = crit + high;
+    c.incident += c.findings;
+    return { ...c, findingCrit: crit, findingHigh: high };
+  }, [rows, inc.data, acked]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -134,7 +163,7 @@ export default function Alerts() {
   }, [rows, tab, sev, q]);
 
   const header = (
-    <PageHeader title="Alerts & Actions" description="Unified feed of open incidents plus per-instance recommendations. Filter by kind, severity, or source; open any row for details and actions."
+    <PageHeader title="Alerts & Actions" description="Open incidents, repository findings and per-server recommendations in one list. Filter by kind, severity or source, and open a row for details."
       actions={<Button variant="primary" size="lg" className="px-3.5" disabled={refreshing} onClick={() => void refresh()}>
         <RefreshCw size={14} className={cn("block", refreshing && "animate-nt-spin")} />{refreshing ? "Refreshing…" : "Refresh all sources"}
       </Button>} />
@@ -142,10 +171,12 @@ export default function Alerts() {
 
   if (!inc.data && !recs.data && !inc.error && !recs.error) return <ScreenSkeleton />;
 
-  const total = rows.length;
+  const total = counts.incident + counts.rec;
   const open = openKey ? rows.find((r) => r.key === openKey) ?? null : null;
   const oldest = inc.data?.snapshotOldestAt ?? null;
-  const oldestMin = ageMinutes(oldest);
+  const shown = filtered.slice(0, limit);
+  const fin = inc.data?.findings;
+  const moreGroups = fin ? fin.groups - fin.listed : 0;
   const widthOf = (n: number) => (total ? `${(n / total) * 100}%` : "0%");
 
   const acknowledge = (key: string) => {
@@ -160,13 +191,17 @@ export default function Alerts() {
     <Screen label="Alerts and Actions">
       {header}
       {(inc.error || recs.error) && <ErrorNote message={inc.error ?? recs.error ?? ""} onRetry={() => { inc.reload(); recs.reload(); }} />}
-      {oldest && oldestMin != null && oldestMin > 30 && (
+      {oldest && (isStale(oldest) ? (
         <Banner tone="var(--warning)">
           <span className="text-warning"><Clock size={14} className="block" /></span>
-          <span className="min-w-0 flex-[1_1_220px]">Oldest external snapshot <span className="font-semibold">{ago(oldest)}</span> · {new Date(oldest).toLocaleString()}</span>
-          <Badge tone="var(--warning)">Stale · over 30 min</Badge>
+          <span className="min-w-0 flex-[1_1_220px]">The oldest source was last updated <span className="font-semibold">{ago(oldest)}</span> · {istDateTime(oldest)}</span>
+          <Badge tone="var(--warning)">Out of date</Badge>
         </Banner>
-      )}
+      ) : (
+        <div className="flex items-center gap-2 text-[12.5px] text-muted-foreground">
+          <Clock size={14} className="block shrink-0" />Data as of {istDateTime(oldest)} · refreshed twice a day
+        </div>
+      ))}
       <KpiGrid>
         <Kpi label="Open items" value={num(total)}>
           <div className="flex h-1.5 gap-0.5 overflow-hidden rounded-[6px]">
@@ -176,14 +211,17 @@ export default function Alerts() {
             <span className="flex-1" style={{ background: "var(--info)" }} />
           </div>
           <div className="flex flex-wrap gap-2.5 text-[12px] text-muted-foreground tnum">
-            {([["CRIT", "Crit"], ["HIGH", "High"], ["WARN", "Warn"], ["INFO", "Info"]] as const).map(([k, l]) => (
-              <span key={k} className="inline-flex items-center gap-[5px]"><Dot color={SEV_COLOR[k]} />{counts[k]} {l}</span>
+            {SEV.map((x) => (
+              <span key={x.key} className="inline-flex items-center gap-[5px]"><Dot color={x.color} />{num(counts[x.key])} {x.label.toLowerCase()}</span>
             ))}
           </div>
         </Kpi>
-        <Kpi label="Incidents" value={num(counts.incident)} valueColor={counts.incident ? "var(--danger)" : "var(--success)"} footer="Spring, Prometheus, CloudWatch and scans" />
-        <Kpi label="Recommendations" value={num(counts.rec)} footer="Rightsizing, modernize and stopped instances" />
-        <Kpi label="Potential savings" valueColor="var(--success)" footer="If every recommendation ships"
+        <Kpi label="Incidents" value={num(counts.incident)} valueColor={counts.incident ? "var(--danger)" : "var(--success)"}
+          footer={counts.findings > 0
+            ? `${num(counts.findingCrit)} critical and ${num(counts.findingHigh)} high repository findings · ${num(counts.alerts)} service and scan alert${counts.alerts === 1 ? "" : "s"}`
+            : "Services, alarms and repository scans"} />
+        <Kpi label="Recommendations" value={num(counts.rec)} footer="Resizing, newer instance types and stopped servers" />
+        <Kpi label="Potential savings" valueColor="var(--success)" footer={counts.savers ? `Best option for each of ${counts.savers} server${counts.savers === 1 ? "" : "s"}` : "No savings identified"}
           value={<>{usd(counts.savings, 0)}<span className="text-[15px] font-medium tracking-normal text-muted-foreground">/mo</span></>} />
       </KpiGrid>
       <Card className="overflow-hidden">
@@ -201,7 +239,7 @@ export default function Alerts() {
                 <button key={s.key} type="button" aria-pressed={on} onClick={() => setSev(on ? "" : s.key)}
                   className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-[8px] border border-dashed px-2.5 text-[12.5px] font-medium text-foreground hover:border-border-strong"
                   style={{ borderColor: on ? `color-mix(in oklab, ${s.color} 45%, transparent)` : "var(--border)", background: on ? tint(s.color) : "transparent" }}>
-                  <Dot color={s.color} size={7} />{s.label}<span className="text-muted-foreground tnum">{counts[s.key]}</span>
+                  <Dot color={s.color} size={7} />{s.label}<span className="text-muted-foreground tnum">{num(counts[s.key])}</span>
                 </button>
               );
             })}
@@ -212,7 +250,7 @@ export default function Alerts() {
             <div className="grid h-[38px] items-center gap-3.5 border-0 border-b border-solid border-border bg-card-2 px-5 text-[12px] font-medium text-muted-foreground" style={{ gridTemplateColumns: COLS }}>
               <span>Severity</span><span>What</span><span>Source</span><span>Impact</span><span>Detected</span><span />
             </div>
-            {filtered.map((r) => {
+            {shown.map((r) => {
               const Icon = r.icon;
               return (
                 <div key={r.key} role="button" tabIndex={0} onClick={() => setOpenKey(r.key)} onKeyDown={(e) => { if (e.key === "Enter") setOpenKey(r.key); }}
@@ -222,13 +260,15 @@ export default function Alerts() {
                     <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-[12px] text-fg-2"><span className="text-muted-foreground"><Icon size={14} className="block" /></span>{r.cat}</span>
                   </div>
                   <div className="min-w-0">
-                    <div className="text-[13.5px] font-medium leading-[1.45] text-wrap-pretty">{r.title}</div>
+                    <div className="text-[13.5px] font-medium leading-[1.45] text-wrap-pretty">
+                      {r.title}{r.findings > 1 && <span className="ml-2 inline-flex h-[18px] items-center rounded-[5px] bg-card-2 px-1.5 align-middle text-[11.5px] font-semibold text-fg-2 tnum">× {num(r.findings)}</span>}
+                    </div>
                     {r.detail && <div className="mt-[5px] max-h-[3.1em] overflow-hidden break-words font-mono text-[11.5px] leading-[1.55] text-muted-foreground">{r.detail}</div>}
                     {r.target && <div className="mt-[5px] text-[12px] text-muted-foreground">Target <span className="font-mono text-fg-2">{r.target}</span></div>}
                   </div>
                   <span className="break-all font-mono text-[12px] leading-[1.55] text-fg-2">{r.source}</span>
                   <span className="whitespace-nowrap text-[13px] font-semibold tnum" style={{ color: r.delta != null && r.delta < 0 ? "var(--success)" : r.delta != null ? "var(--danger)" : "var(--muted-fg)" }}>{impactText(r.delta)}</span>
-                  <span className="whitespace-nowrap text-[12.5px] text-muted-foreground" title={new Date(r.at).toLocaleString()}>{ago(r.at)}</span>
+                  <span className="whitespace-nowrap text-[12.5px] text-muted-foreground" title={istDateTime(r.at)}>{ago(r.at)}</span>
                   <span className="pt-[3px] text-subtle"><ChevronRight size={14} className="block" /></span>
                 </div>
               );
@@ -238,8 +278,17 @@ export default function Alerts() {
               : <EmptyState title="No matches">No loaded items match these filters.</EmptyState>)}
           </div>
         </div>
-        <div className="flex justify-between gap-3 px-5 py-3 text-[12.5px] text-muted-foreground">
-          <span className="tnum">Showing {filtered.length} of {tab === "all" ? total : counts[tab]}</span><span>Sorted by severity, then newest</span>
+        {filtered.length > shown.length && (
+          <div className="flex justify-center border-0 border-b border-solid border-border px-5 py-3">
+            <Button size="sm" onClick={() => setLimit((n) => n + PAGE)}>Show {Math.min(PAGE, filtered.length - shown.length)} more</Button>
+          </div>
+        )}
+        <div className="flex flex-wrap justify-between gap-x-3 gap-y-1 px-5 py-3 text-[12.5px] text-muted-foreground">
+          <span className="tnum">
+            Showing {num(shown.length)} of {num(filtered.length)} rows
+            {fin && fin.groups > 0 && tab !== "rec" && ` · ${num(fin.CRIT + fin.HIGH)} findings from the last ${fin.windowDays} days, grouped by repository and rule${moreGroups > 0 ? `; the largest ${num(fin.listed)} of ${num(fin.groups)} groups are listed` : ""}`}
+          </span>
+          <span>Sorted by severity: service alerts first, then the largest finding groups</span>
         </div>
       </Card>
       <Sheet open={!!open} onOpenChange={(v) => { if (!v) setOpenKey(null); }}>
@@ -258,14 +307,15 @@ export default function Alerts() {
                   <SheetTitle className="m-0 text-[18px] font-semibold leading-[1.4] tracking-[-0.015em] text-wrap-pretty">{open.title}</SheetTitle>
                   {open.detail && (
                     <div>
-                      <div className="mb-2 text-[12px] font-medium text-muted-foreground">Latest log entry</div>
+                      <div className="mb-2 text-[12px] font-medium text-muted-foreground">{open.cat === "Spring" ? "Latest error in the logs" : "Details"}</div>
                       <div className="whitespace-pre-wrap break-words rounded-[10px] border border-solid border-border bg-card-2 px-3.5 py-3 font-mono text-[12px] leading-[1.65] text-fg-2">{open.detail}</div>
                     </div>
                   )}
                   <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-x-4 gap-y-3 text-[13px]">
                     <Field label="Source"><span className="break-all font-mono text-[12.5px]">{open.source}</span></Field>
                     <Field label="Category">{open.cat}</Field>
-                    <Field label="Detected">{ago(open.at)}</Field>
+                    <Field label="Detected">{ago(open.at)} · {istDateTime(open.at)}</Field>
+                    {open.findings > 0 && <Field label="Findings"><span className="font-medium tnum">{num(open.findings)}</span></Field>}
                     <Field label="Impact"><span className="font-medium tnum">{impactText(open.delta)}</span></Field>
                     {open.target && <Field label="Target type"><span className="font-mono text-[12.5px]">{open.target}</span></Field>}
                   </div>

@@ -26,7 +26,7 @@ export async function GET(req: Request) {
 
   const daysRaw = Number(new URL(req.url).searchParams.get("days") ?? 30);
   const days = VALID_DAYS.has(daysRaw) ? daysRaw : 30;
-  const since = new Date(Date.now() - (days + 1) * 86_400_000).toISOString().slice(0, 10);
+  const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
 
   const [tags, dailyRows] = await Promise.all([
     prisma.serverTag.findMany({ select: { matchKey: true, category: true } }),
@@ -42,11 +42,18 @@ export async function GET(req: Request) {
   // Bucket: date -> category -> amount
   const bucket = new Map<string, Record<string, number>>();
   const dates = new Set<string>();
+  const firstPartialDay = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
   for (const r of dailyRows) {
-    dates.add(r.date);
+    // Servers only: the credit line ("NoResourceId") and NAT gateways are not instances and have no category.
+    if (!r.resourceId.startsWith("i-")) continue;
+    // The column holds either "2026-11-18" or "2026-11-18T00:00:00Z".
+    const date = r.date.slice(0, 10);
+    // AWS keeps adding charges to today and yesterday (UTC), so those days are not complete yet.
+    if (date >= firstPartialDay) continue;
+    dates.add(date);
     const cat = tagByKey.get(r.resourceId) ?? "Other";
-    if (!bucket.has(r.date)) bucket.set(r.date, {});
-    const perDate = bucket.get(r.date)!;
+    if (!bucket.has(date)) bucket.set(date, {});
+    const perDate = bucket.get(date)!;
     perDate[cat] = (perDate[cat] ?? 0) + Number(r.amount);
   }
 
@@ -72,6 +79,6 @@ export async function GET(req: Request) {
     series,
     totals,
     grandTotal: grand,
-    since,
+    since: sortedDates[0] ?? since,
   });
 }

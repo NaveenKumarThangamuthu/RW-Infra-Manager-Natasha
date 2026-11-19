@@ -2,10 +2,11 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
-  Sparkles, ChevronDown, ExternalLink, Cpu, MemoryStick, Zap, HardDrive,
+  ChevronDown, ExternalLink, Cpu, MemoryStick, Zap, HardDrive,
   AlertTriangle, Terminal, Rocket,
 } from "lucide-react";
 import { money } from "./format";
+import { istTime } from "@/components/natasha/format";
 
 interface Ec2InstanceDetailProps {
   instanceId: string;
@@ -180,29 +181,6 @@ function HeapBar({ used, max }: { used?: number | null; max?: number | null }) {
   );
 }
 
-function WeeklyErrorChart({ points }: { points: Array<{ label: string; value: number }> }) {
-  const max = Math.max(1, ...points.map((p) => p.value));
-  return (
-    <div className="ec2-err-week">
-      {points.map((p, i) => {
-        const h = Math.max(6, (p.value / max) * 100);
-        const hot = p.value / max >= 0.6;
-        const warm = p.value / max >= 0.25 && !hot;
-        return (
-          <div key={i} className="ec2-err-week-col" title={`${p.label}: ${p.value} errors`}>
-            <div
-              className={`ec2-err-week-bar ${hot ? "hot" : warm ? "warm" : ""}`}
-              style={{ height: `${h}%` }}
-            />
-            <div className="ec2-err-week-label">{p.label}</div>
-            <div className="ec2-err-week-val tab-num">{p.value}</div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 export default function Ec2InstanceDetail({ instanceId, name, region, publicIp, privateIp, onClose }: Ec2InstanceDetailProps) {
   const [tab, setTab] = useState<TabKey>("services");
   const { data: spring } = useJsonOnce<SpringResp>("/api/perf/spring");
@@ -213,27 +191,10 @@ export default function Ec2InstanceDetail({ instanceId, name, region, publicIp, 
     return spring.services.filter((s) => matchesInstance(s, instanceId, publicIp, privateIp, name));
   }, [spring, instanceId, publicIp, privateIp, name]);
 
-  // Pick the noisiest matched service to seed the errors tab.
-  const noisiest = useMemo(() => {
-    if (!services.length) return null;
-    return [...services].sort((a, b) => (b.errorsLastHour ?? 0) - (a.errorsLastHour ?? 0))[0];
-  }, [services]);
+  // The error list shows one service at a time: the first one matched to this host.
+  const noisiest = services[0] ?? null;
   const errorsUrl = noisiest ? `/api/perf/spring/logs/details?service=${encodeURIComponent(noisiest.serviceName)}&window=24h` : null;
   const { data: errors, loading: errorsLoading } = useJsonOnce<LogDetailsResp>(tab === "errors" ? errorsUrl : null);
-
-  // Simulated 7-day trend from today's error count (real data only available for last 24h — earlier days shown as decayed baseline).
-  const weekPoints = useMemo(() => {
-    const days = ["Fri", "Sat", "Sun", "Mon", "Tue", "Wed", "Thu"];
-    const today = noisiest?.errorsLastHour ?? 0;
-    // Baseline = median of matched services' error counts; last day = today.
-    const baseline = Math.max(1, Math.round((services.reduce((a, s) => a + (s.errorsLastHour ?? 0), 0)) / Math.max(1, services.length)));
-    return days.map((label, i) => ({
-      label,
-      value: i === days.length - 1 ? today : Math.round(baseline * (0.7 + i * 0.08)),
-    }));
-  }, [noisiest, services]);
-
-  const totalErr = services.reduce((a, s) => a + (s.errorsLastHour ?? 0), 0);
 
   return (
     <div className="repo-detail ec2-detail">
@@ -268,7 +229,7 @@ export default function Ec2InstanceDetail({ instanceId, name, region, publicIp, 
           Recommendations {rec ? <span className="ec2-tab-count">({rec.analysis.recommendations.length})</span> : null}
         </button>
         <button role="tab" aria-selected={tab === "errors"} className={`ec2-tab ${tab === "errors" ? "active" : ""}`} onClick={() => setTab("errors")}>
-          Errors <span className="ec2-tab-count">({totalErr})</span>
+          Errors
         </button>
       </div>
 
@@ -282,7 +243,7 @@ export default function Ec2InstanceDetail({ instanceId, name, region, publicIp, 
           ) : (
             <>
               <div className="fable-triage">
-                <div className="fable-triage-head"><Sparkles size={13} /> Fable context <span className="model-chip">claude-fable-5</span></div>
+                <div className="fable-triage-head">Note</div>
                 <div className="fable-triage-fix">
                   {services.length === 1
                     ? `Single service on this host — restarting the instance is a full outage for ${services[0].displayName ?? services[0].serviceName}.`
@@ -297,8 +258,6 @@ export default function Ec2InstanceDetail({ instanceId, name, region, publicIp, 
                       <th>Status</th>
                       <th>Port</th>
                       <th>Heap</th>
-                      <th className="num">ERROR (1h)</th>
-                      <th>Version</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -320,8 +279,6 @@ export default function Ec2InstanceDetail({ instanceId, name, region, publicIp, 
                           </td>
                           <td className="mono small">{port ?? "—"}</td>
                           <td><HeapBar used={heapUsed} max={heapMax} /></td>
-                          <td className="num" style={{ color: (s.errorsLastHour ?? 0) > 0 ? "#facc15" : undefined }}>{s.errorsLastHour ?? 0}</td>
-                          <td className="mono small">{s.version ?? "—"}</td>
                         </tr>
                       );
                     })}
@@ -421,7 +378,7 @@ export default function Ec2InstanceDetail({ instanceId, name, region, publicIp, 
                   })()}
 
                   <div className="fable-triage" style={{ marginTop: 12 }}>
-                    <div className="fable-triage-head"><Sparkles size={13} /> Fable ranking <span className="model-chip">claude-fable-5</span></div>
+                    <div className="fable-triage-head">Note</div>
                     <div className="fable-triage-fix">
                       {(() => {
                         const recs = rec.analysis.recommendations;
@@ -446,69 +403,24 @@ export default function Ec2InstanceDetail({ instanceId, name, region, publicIp, 
 
       {tab === "errors" && (
         <div className="ec2-tab-panel">
-          <div className="ec2-err-layout">
-            <div className="ec2-err-chart-block">
-              <div className="panel-head">
-                <h3 className="panel-h3">7-day error trend</h3>
-                <span className="chip">last week · via {noisiest ? noisiest.displayName ?? noisiest.serviceName : "matched services"}</span>
-              </div>
-              <WeeklyErrorChart points={weekPoints} />
-              <div className="muted small ec2-err-caption">
-                Bars auto-scale to the peak day. Today ({weekPoints[weekPoints.length - 1].label}) shown in warmer color when it's a spike vs the week baseline.
-              </div>
-            </div>
-            <div className="ec2-err-summary">
-              <div className="ec2-err-stat">
-                <div className="ec2-err-stat-label">Σ this week</div>
-                <div className="ec2-err-stat-val tab-num">{weekPoints.reduce((a, p) => a + p.value, 0)}</div>
-              </div>
-              <div className="ec2-err-stat">
-                <div className="ec2-err-stat-label">Peak day</div>
-                <div className="ec2-err-stat-val tab-num">{Math.max(...weekPoints.map((p) => p.value))}</div>
-              </div>
-              <div className="ec2-err-stat">
-                <div className="ec2-err-stat-label">Ø baseline</div>
-                <div className="ec2-err-stat-val tab-num">
-                  {Math.round(weekPoints.slice(0, -1).reduce((a, p) => a + p.value, 0) / Math.max(1, weekPoints.length - 1))}
-                </div>
-              </div>
-              <div className="ec2-err-stat">
-                <div className="ec2-err-stat-label">Services</div>
-                <div className="ec2-err-stat-val tab-num">{services.length}</div>
-              </div>
-            </div>
-          </div>
-
           {errorsUrl && errorsLoading && <div className="muted small">Loading ERROR entries…</div>}
           {errors && errors.entries.length > 0 && (
             <div style={{ marginTop: 14 }}>
-              <h3 className="panel-h3" style={{ margin: "0 0 8px" }}>Top error patterns · last 24h</h3>
+              <h3 className="panel-h3" style={{ margin: "0 0 8px" }}>Recent errors · {noisiest?.displayName ?? noisiest?.serviceName} · last 24h</h3>
               <div className="repo-detail-table-wrap">
                 <table className="repo-findings-table">
                   <thead>
-                    <tr><th style={{ width: 60 }}>Count</th><th>Pattern</th><th style={{ width: 120 }}>Last seen</th></tr>
+                    <tr><th>Message</th><th style={{ width: 120 }}>Time (IST)</th></tr>
                   </thead>
                   <tbody>
                     {errors.entries.slice(0, 8).map((e, i) => (
                       <tr key={i}>
-                        <td className="mono">×1</td>
                         <td className="mono small" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 640 }}>{e.message.slice(0, 180)}</td>
-                        <td className="muted small">{e.at ? new Date(e.at).toLocaleTimeString() : "—"}</td>
+                        <td className="muted small">{e.at ? istTime(e.at) : "—"}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-              </div>
-            </div>
-          )}
-
-          {noisiest && (
-            <div className="fable-triage" style={{ marginTop: 14 }}>
-              <div className="fable-triage-head"><Sparkles size={13} /> Fable pattern insight <span className="model-chip">claude-fable-5</span></div>
-              <div className="fable-triage-fix">
-                {totalErr === 0
-                  ? `This host has 0 errors in the last hour — quiet week overall.`
-                  : `${totalErr} error${totalErr === 1 ? "" : "s"} in the last hour across ${services.length} service${services.length === 1 ? "" : "s"}. Noisiest: ${noisiest.displayName ?? noisiest.serviceName}. Deep-dive at /perf/spring → click that service to see dedup'd stack traces.`}
               </div>
             </div>
           )}

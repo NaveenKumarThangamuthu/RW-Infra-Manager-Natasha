@@ -45,11 +45,13 @@ export function Kpi({ label, value, valueColor, badge, footer, children }: {
 }
 
 export function StatStrip({ items, cols = 5 }: { items: Array<{ label: ReactNode; value: ReactNode; color?: string; sub?: ReactNode }>; cols?: number }) {
+  // Six tiles follow the 6 / 3 / 2 column breakpoints; five keep the original spanning layout.
+  const six = cols === 6;
   return (
-    <Card className="grid overflow-hidden" style={{ gridTemplateColumns: `repeat(var(--s5c,${cols}),minmax(0,1fr))` }}>
+    <Card className="grid overflow-hidden" style={{ gridTemplateColumns: `repeat(var(${six ? "--k6" : "--s5c"},${cols}),minmax(0,1fr))` }}>
       {items.map((it, i) => (
         <div key={i} className="flex min-w-0 flex-col gap-1.5 px-5 py-4 shadow-[1px_0_0_var(--border),0_1px_0_var(--border)]"
-          style={{ gridColumn: `span var(${i < 3 ? "--s5a" : i === 3 ? "--s5b" : "--s5e"},1)` }}>
+          style={six ? undefined : { gridColumn: `span var(${i < 3 ? "--s5a" : i === 3 ? "--s5b" : "--s5e"},1)` }}>
           <span className="text-[13px] font-medium leading-5 text-muted-foreground">{it.label}</span>
           <span className="mt-auto text-[26px] font-semibold leading-8 tracking-[-0.03em] tnum" style={{ color: it.color }}>{it.value}</span>
           {it.sub != null && <span className="truncate text-[12.5px] leading-[18px] text-muted-foreground">{it.sub}</span>}

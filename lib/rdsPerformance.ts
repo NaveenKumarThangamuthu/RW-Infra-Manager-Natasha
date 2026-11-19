@@ -199,12 +199,28 @@ function buildIssues(p: Omit<RdsPerformance, "issues" | "health">): RdsIssue[] {
     }
   }
   if (s.swapUsage.max != null && s.swapUsage.max > 50 * MB) {
-    out.push({
-      severity: "warning",
-      title: "Database is swapping",
-      evidence: `Swap usage peaked at ${(s.swapUsage.max / MB).toFixed(0)} MB.`,
-      action: "Swapping on a database is always a latency problem. Add memory rather than tuning around it.",
-    });
+    // Swap that sits flat while memory is free is left over from an earlier moment of pressure and is
+    // not being used now. Only warn when it grew in this window or memory is actually short.
+    const grewBy = s.swapUsage.max - (s.swapUsage.min ?? s.swapUsage.max);
+    const memoryShort = s.freeableMemory.min != null && s.freeableMemory.min < 1 * GB;
+    const peakMb = (s.swapUsage.max / MB).toFixed(0);
+    if (grewBy > 50 * MB || memoryShort) {
+      out.push({
+        severity: "warning",
+        title: "Database is swapping",
+        evidence: grewBy > 50 * MB
+          ? `Swap usage grew by ${(grewBy / MB).toFixed(0)} MB in this window, to ${peakMb} MB.`
+          : `Swap usage is ${peakMb} MB while freeable memory dropped below 1 GB.`,
+        action: "Active swapping on a database slows queries. Add memory rather than tuning around it.",
+      });
+    } else {
+      out.push({
+        severity: "info",
+        title: "Swap in use (stable)",
+        evidence: `Swap usage is steady at about ${peakMb} MB and freeable memory stayed above 1 GB in this window.`,
+        action: "No action needed while it stays flat. It will clear at the next restart.",
+      });
+    }
   }
 
   // --- Storage -----------------------------------------------------------

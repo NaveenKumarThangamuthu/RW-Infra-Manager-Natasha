@@ -102,6 +102,13 @@ function classify(usageType: string): Component {
   return "other";
 }
 
+/** Display name for a cost row that has no live instance behind it. */
+function fallbackName(id: string, amount: number): string {
+  if (id.startsWith("i-")) return "(unknown / terminated)";
+  if (id.startsWith("nat-")) return "NAT gateway";
+  return amount < 0 ? "Credits and discounts (not linked to an instance)" : "Charges not linked to an instance";
+}
+
 /** Days in the current calendar month (UTC). */
 function daysInCurrentMonth(): number {
   const now = new Date();
@@ -133,7 +140,8 @@ export async function GET(req: Request) {
 
     let aws;
     try {
-      aws = await cached(`alloc-itemized:${month ?? "current"}`, DEFAULT_TTL, async () => {
+      // The itemized range is part of the key: "month" and "14d" modes can ask for different ranges.
+      aws = await cached(`alloc-itemized:${month ?? "current"}:${range14.Start}:${range14.End}`, DEFAULT_TTL, async () => {
       const [compute, instances, monthServices, ec2Other, volMap, eipMap, allUsage] = await Promise.all([
         resourceCostForService(SERVICE.EC2, range14),
         getAllInstances(),
@@ -236,7 +244,7 @@ export async function GET(req: Request) {
 
       return {
         instanceId: id,
-        name: info?.name ?? "(unknown / terminated)",
+        name: info?.name ?? fallbackName(id, c.amount),
         region: info?.region ?? "-",
         type: info?.type ?? "-",
         state: info?.state ?? "-",

@@ -17,9 +17,10 @@ const norm = (s: string) => s.toLowerCase().replace(/[-_]/g, "");
 const strip = (s: string) => s.replace(/service$/i, "").replace(/svc$/i, "");
 
 /**
- * Prometheus and ELK name the same service differently, so match in stages:
- * exact, then without the "-service" suffix, then substring with at least 8
- * overlapping characters to avoid false positives.
+ * Prometheus and ELK name the same service differently, so match in two stages:
+ * exact, then without the "-service" suffix. There is deliberately no fuzzy or
+ * substring stage: it copied one service's counts onto similarly named ones.
+ * A service with no match has no log figures.
  */
 export function buildLogLookup(services: LogServiceStat[]): (name: string) => LogServiceStat | undefined {
   const exact = new Map(services.map((s) => [norm(s.service), s]));
@@ -32,12 +33,6 @@ export function buildLogLookup(services: LogServiceStat[]): (name: string) => Lo
     if (short !== key) {
       const s = stripped.get(short);
       if (s) return s;
-    }
-    if (short.length >= 8) {
-      for (const [k, stat] of Array.from(exact.entries())) {
-        const e = strip(k);
-        if (e.length >= 6 && (short.includes(e) || e.includes(short))) return stat;
-      }
     }
     return undefined;
   };

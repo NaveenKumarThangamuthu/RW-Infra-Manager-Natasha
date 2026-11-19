@@ -38,3 +38,4 @@ public/vulnerability-report.pdf
 
 # Claude Code worktrees
 .claude/worktrees/
+public/vulnerability-report-status.json

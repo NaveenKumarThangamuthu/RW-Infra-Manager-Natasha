@@ -11,6 +11,8 @@ export interface ReportEntry {
   viewUrl: string;
   downloadUrl: string;
   downloadName: string;
+  /** Word shown before the file date in the list; "Added" when absent. */
+  dateLabel?: string;
   alt?: { label: string; url: string };
 }
 export interface ReportFile { name: string; kind: ReportKind; sizeBytes: number; modifiedAt: Date }
@@ -81,6 +83,7 @@ async function vulnerabilityReport(): Promise<ReportEntry | null> {
       viewUrl: "/vulnerability-report.html",
       downloadUrl: "/vulnerability-report.html",
       downloadName: "vulnerability-report.html",
+      dateLabel: "Generated",
       ...(pdf ? { alt: { label: "PDF version", url: "/vulnerability-report.pdf" } } : {}),
     };
   }

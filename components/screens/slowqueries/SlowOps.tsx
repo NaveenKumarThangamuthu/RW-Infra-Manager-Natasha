@@ -22,7 +22,7 @@ export function SlowOps({ data }: { data: LogsResp }) {
       <CardHeader className="pb-3" title="Timed operations"
         description={error
           ? `Sample unavailable: ${error}`
-          : <>Parsed from <span className="font-medium text-fg-2">[TIMING] … took</span> and <span className="font-medium text-fg-2">Duration: … sec</span> log lines. Percentiles are over the sample, not every call.</>}
+          : "Operations whose duration the services write to their logs. Typical and slow figures are over the sampled lines, not every call."}
         actions={<Badge size="md" tone="var(--info)">sampled, {num(sampled)} lines</Badge>} />
       <div className="px-4 pb-3">
         <SearchInput wrapperClassName="max-w-[320px]" placeholder="Search operation or service…" value={q} onChange={(e) => setQ(e.target.value)} />
@@ -31,7 +31,7 @@ export function SlowOps({ data }: { data: LogsResp }) {
         <div className="min-w-[860px]">
           <HeadRow columns={COLS}>
             <span>Operation</span><span>Service</span><span className="text-right">Samples</span>
-            <span className="text-right">p50</span><span className="text-right">p95</span><span className="text-right">Max</span>
+            <span className="text-right">Typical</span><span className="text-right">Slow (p95)</span><span className="text-right">Slowest</span>
           </HeadRow>
           {filtered.map((r) => (
             <div key={`${r.service}|${r.operation}`} className="grid items-center gap-3.5 border-0 border-b border-solid border-border px-5 py-3 text-[13px]" style={{ gridTemplateColumns: COLS }}>
@@ -48,7 +48,7 @@ export function SlowOps({ data }: { data: LogsResp }) {
             : <EmptyState title="No timed operations">No timing lines were found in this window.</EmptyState>)}
         </div>
       </div>
-      <div className="px-5 py-3 text-[12.5px] text-muted-foreground">Sorted by p95, slowest first · p95 over 1 s is amber, over 3 s red</div>
+      <div className="px-5 py-3 text-[12.5px] text-muted-foreground">Sorted by the slow (p95) figure: 19 in 20 calls finish faster than it · over 1 s is amber, over 3 s red</div>
     </Card>
   );
 }

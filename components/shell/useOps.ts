@@ -8,12 +8,12 @@ export interface DashboardSummary {
   github: {
     activeRepos: number;
     lastSyncAt: string | null;
-    findings: { total: number; CRIT: number; HIGH: number; MED: number; LOW: number; INFO: number };
-    scans: { last24h: number; open: number; lastAt: string | null };
+    findings: { total: number; CRIT: number; HIGH: number; MED: number; LOW: number; INFO: number; windowDays?: number };
+    scans: { last24h: number; reposScanned24h?: number; reposFailed24h?: number; open: number; lastAt: string | null };
   };
   spring: { total: number; down: number; highHeap: number; servicesWithErrors: number; totalErrors1h: number; lastHealthSnap: string | null; lastLogsSnap: string | null };
   lambda: { total: number; invocations24h: number; errors24h: number; lastSnap: string | null };
-  recommendations: { total: number; monthlySavingsUsd: number; top: Array<{ instanceId: string; name?: string; message: string; monthlyDeltaUsd: number }>; lastSnap: string | null };
+  recommendations: { total: number; monthlySavingsUsd: number; instancesWithSavings?: number; firstMessage?: string | null; top: Array<{ instanceId: string; name?: string; message: string; monthlyDeltaUsd: number }>; lastSnap: string | null };
   ops: { cronLastAt: string | null; backfillLastAt: string | null; snapshots: Record<string, SnapMeta> };
 }
 

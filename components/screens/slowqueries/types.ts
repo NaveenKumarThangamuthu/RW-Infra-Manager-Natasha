@@ -21,9 +21,9 @@ export const KIND_COLOR: Record<Kind, string> = {
 };
 
 export const KIND_HINT: Partial<Record<Kind, string>> = {
-  readTimeout: "Feign HTTP calls between services, not database calls.",
+  readTimeout: "HTTP calls between services, not database calls.",
   mongoNoServer: "MongoDB driver could not reach a server.",
-  sqlFailed: "Statements that MySQL rejected (Spring PreparedStatementCallback).",
+  sqlFailed: "Statements that MySQL rejected.",
 };
 
 export const STATEMENT_KIND: Record<StatementKind, { label: string; color: string; kind: Kind }> = {

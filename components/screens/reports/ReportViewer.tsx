@@ -3,9 +3,9 @@ import { Download, ExternalLink } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { ago, bytes } from "@/components/natasha/format";
+import { bytes, istDateTime } from "@/components/natasha/format";
 import { CsvTable } from "./CsvTable";
-import { KIND_META, type ReportEntry } from "./types";
+import { KIND_META, reportDateText, type ReportEntry } from "./types";
 
 const FRAME_CLASS = "block h-[70vh] min-h-[420px] w-full border-0 bg-white lg:h-[calc(100vh-230px)]";
 
@@ -31,7 +31,7 @@ export function ReportViewer({ report }: { report: ReportEntry }) {
           <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-muted-foreground">
             <Badge size="xs" tone={meta.color}>{meta.label}</Badge>
             <span>{bytes(report.sizeBytes)}</span>
-            <span title={new Date(report.modifiedAt).toLocaleString()}>Updated {ago(report.modifiedAt)}</span>
+            {reportDateText(report, istDateTime) && <span>{reportDateText(report, istDateTime)}</span>}
           </div>
         </div>
         <div className="flex flex-wrap gap-2">

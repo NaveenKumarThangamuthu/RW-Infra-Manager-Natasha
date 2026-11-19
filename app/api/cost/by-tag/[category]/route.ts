@@ -78,7 +78,7 @@ export async function GET(req: Request, { params }: { params: { category: string
   const total14d = roster.reduce((s, r) => s + r.cost14d, 0);
 
   // Daily series (last 30 days) summed across this category's instance ids
-  const since = new Date(Date.now() - 31 * 86_400_000).toISOString().slice(0, 10);
+  const since = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
   const dailyRows = instanceIds.length
     ? await prisma.resourceDailyCost.findMany({
         where: { service: "EC2", resourceId: { in: instanceIds }, date: { gte: since } },
@@ -87,7 +87,11 @@ export async function GET(req: Request, { params }: { params: { category: string
     : [];
   const dailyByDate = new Map<string, number>();
   for (const r of dailyRows) {
-    dailyByDate.set(r.date, (dailyByDate.get(r.date) ?? 0) + Number(r.amount));
+    // The column holds either "2026-11-18" or "2026-11-18T00:00:00Z".
+    const date = r.date.slice(0, 10);
+    // A row last written during its own day is still filling in at AWS: leave that day out.
+    if (r.updatedAt.toISOString().slice(0, 10) <= date) continue;
+    dailyByDate.set(date, (dailyByDate.get(date) ?? 0) + Number(r.amount));
   }
   const trend = [...dailyByDate.entries()]
     .sort(([a], [b]) => a.localeCompare(b))

@@ -65,5 +65,6 @@ export function istLabels(ts: number[], long: boolean) {
 /** Milliseconds as "3.5 s" from 1,000 ms up, else "840 ms". */
 export function dur(ms: number | null | undefined): string {
   if (ms == null || !Number.isFinite(ms)) return "—";
-  return ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 10_000 ? 0 : 1)} s` : `${Math.round(ms)} ms`;
+  // 9,950 ms and up rounds to whole seconds, so "10.0 s" never sits beside "10 s".
+  return ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 9_950 ? 0 : 1)} s` : `${Math.round(ms)} ms`;
 }

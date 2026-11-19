@@ -4,7 +4,7 @@ import { ChevronRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader } from "@/components/ui/card";
 import { TimeChart } from "@/components/natasha/charts";
-import { ago, compact, num } from "@/components/natasha/format";
+import { ago, compact, istDateTime, num } from "@/components/natasha/format";
 import { Dot, EmptyState, HeadRow, ShareBar } from "@/components/natasha/primitives";
 import { cn, tint } from "@/lib/utils";
 import { istLabels, KIND_COLOR, KIND_HINT, STATEMENT_KIND, type Kind, type LogsResp, type SampleTarget } from "./types";
@@ -26,7 +26,11 @@ function PartialBadge({ error }: { error?: string }) {
 export function LogTrouble({ data, onOpen }: { data: LogsResp; onOpen: (t: SampleTarget) => void }) {
   const { labels, full } = useMemo(() => istLabels(data.buckets), [data.buckets]);
   const grand = data.kinds.reduce((n, k) => n + k.total, 0);
-  const plotted = data.kinds.filter((k) => k.total > 0);
+  const withLines = data.kinds.filter((k) => k.total > 0);
+  // On one linear axis a kind under 1% of the largest is a flat line at zero, so it is listed instead of drawn.
+  const largest = Math.max(0, ...withLines.map((k) => k.total));
+  const plotted = withLines.filter((k) => k.total >= largest * 0.01);
+  const tooSmall = withLines.filter((k) => k.total < largest * 0.01);
   const label = (k: Kind) => data.kinds.find((x) => x.key === k)?.label ?? k;
 
   const services = useMemo(() => {
@@ -50,9 +54,14 @@ export function LogTrouble({ data, onOpen }: { data: LogsResp; onOpen: (t: Sampl
           {plotted.map((k) => <span key={k.key} className="inline-flex items-center gap-1.5"><Dot color={KIND_COLOR[k.key]} size={8} />{k.label}</span>)}
         </div>
         <div className="px-4">
-          <TimeChart labels={labels} full={full} height={200} area strokeWidth={1.75} fmt={num} axisFmt={compact} axisWidth={40} ticks={6}
+          <TimeChart labels={labels} full={full} height={200} area strokeWidth={1.75} fmt={num} axisFmt={compact} axisWidth={40} ticks={6} smooth={false}
             empty="No matching lines in this window." series={plotted.map((k) => ({ name: k.label, color: KIND_COLOR[k.key], values: k.trend }))} />
         </div>
+        {tooSmall.length > 0 && (
+          <div className="px-5 pt-3 text-[12px] text-muted-foreground">
+            Too small to draw at this scale (under 1% of the largest): {tooSmall.map((k) => `${k.label} ${num(k.total)}`).join(" · ")}. Their counts are in the table below.
+          </div>
+        )}
       </Card>
 
       <Card className="overflow-hidden">
@@ -116,11 +125,11 @@ export function LogTrouble({ data, onOpen }: { data: LogsResp; onOpen: (t: Sampl
                 <span className="line-clamp-3 text-[12.5px] text-fg-2" title={g.reason}>{g.reason || "—"}</span>
                 <span className="text-right font-semibold tnum">{num(g.count)}</span>
                 <span className="break-all font-mono text-[11.5px] text-muted-foreground">{g.services.join(", ")}</span>
-                <span className="text-[12.5px] text-muted-foreground" title={g.lastAt ? new Date(g.lastAt).toLocaleString() : undefined}>{ago(g.lastAt)}</span>
+                <span className="text-[12.5px] text-muted-foreground" title={g.lastAt ? istDateTime(g.lastAt) : undefined}>{ago(g.lastAt)}</span>
               </div>
             );
           })}
-          {!data.statements.groups.length && <EmptyState title="No failed statements">No PreparedStatementCallback failures in this window.</EmptyState>}
+          {!data.statements.groups.length && <EmptyState title="No failed statements">No statements were rejected by MySQL in this window.</EmptyState>}
         </Scroll>
       </Card>
 

@@ -5,15 +5,14 @@ import { FileCode, FileSpreadsheet, FileText, RefreshCw, type LucideIcon } from 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { bytes } from "@/components/natasha/format";
+import { bytes, istDate } from "@/components/natasha/format";
 import { Banner, EmptyState, ErrorNote, PageHeader, Screen, Skeleton } from "@/components/natasha/primitives";
 import { useJson } from "@/components/useJson";
 import { cn } from "@/lib/utils";
 import { ReportViewer } from "./ReportViewer";
-import { KIND_META, type ReportEntry, type ReportKind, type ReportsResp } from "./types";
+import { KIND_META, reportDateText, type ReportEntry, type ReportKind, type ReportsResp } from "./types";
 
 const ICONS: Record<ReportKind, LucideIcon> = { pdf: FileText, csv: FileSpreadsheet, html: FileCode };
-const DATE_OPTS: Intl.DateTimeFormatOptions = { day: "numeric", month: "short", year: "numeric" };
 
 function ReportList({ reports, activeId, onPick }: { reports: ReportEntry[]; activeId: string; onPick: (id: string) => void }) {
   return (
@@ -31,7 +30,7 @@ function ReportList({ reports, activeId, onPick }: { reports: ReportEntry[]; act
                 <span className="block break-words text-[13.5px] font-medium">{r.title}</span>
                 <span className="mt-1 flex flex-wrap items-center gap-2 text-[12px] text-muted-foreground">
                   <Badge size="xs" tone={KIND_META[r.kind].color}>{KIND_META[r.kind].label}</Badge>
-                  <span>{new Date(r.modifiedAt).toLocaleDateString("en-GB", DATE_OPTS)}</span>
+                  {reportDateText(r, istDate) && <span>{reportDateText(r, istDate)}</span>}
                   <span>{bytes(r.sizeBytes)}</span>
                 </span>
               </span>

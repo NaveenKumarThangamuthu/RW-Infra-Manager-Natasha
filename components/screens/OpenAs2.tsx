@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
-import { num } from "@/components/natasha/format";
+import { istTime, num } from "@/components/natasha/format";
 import { ErrorNote, PageHeader, Screen } from "@/components/natasha/primitives";
 import { useShell } from "@/components/shell/ShellContext";
 import { useJson } from "@/components/useJson";
@@ -23,12 +23,14 @@ const REFRESH_SECONDS = 10;
 const LOG_LIMIT = 500;
 const QUERY = encodeURIComponent('{job="openas2"}');
 
+/** Lines with none of the five levels: mostly stack-trace and header continuation lines. */
+const isOther = (s: Sev) => !LEVELS.some((l) => l[0] === s);
 const colorOf = (s: Sev) => LEVELS.find((l) => l[0] === s)?.[1] ?? "var(--muted-fg)";
 
 export default function OpenAs2() {
   const { toast } = useShell();
   const [win, setWin] = useState<Win>("15m");
-  const [level, setLevel] = useState<Sev | "all">("all");
+  const [level, setLevel] = useState<Sev | "all" | "rest">("all");
   const [q, setQ] = useState("");
   const [auto, setAuto] = useState(true);
   const [sec, setSec] = useState(REFRESH_SECONDS);
@@ -47,12 +49,16 @@ export default function OpenAs2() {
 
   const entries = useMemo(() => [...(data?.entries ?? [])].sort((a, b) => b.timeMs - a.timeMs), [data]);
   const needle = q.trim().toLowerCase();
-  const shown = entries.filter((e) => (level === "all" || e.severity === level) && (!needle || e.message.toLowerCase().includes(needle)));
+  const shown = entries.filter((e) => (level === "all" || (level === "rest" ? isOther(e.severity) : e.severity === level)) && (!needle || e.message.toLowerCase().includes(needle)));
   const count = (s: Sev) => entries.filter((e) => e.severity === s).length;
+  const others = entries.filter((e) => isOther(e.severity)).length;
+  // The log store returns at most LOG_LIMIT lines, so a full page means there are older lines not shown.
+  const capped = entries.length >= LOG_LIMIT;
+  const lineCount = capped ? `newest ${num(LOG_LIMIT)} lines (limit reached)` : `${num(entries.length)} line${entries.length === 1 ? "" : "s"}`;
 
   return (
     <Screen label="OpenAS2 EDI">
-      <PageHeader title="OpenAS2 · EDI" description={`AS2 EDI live logs via Loki job openas2 · ${num(entries.length)} lines in the last ${WINDOWS[win][1]}`} actions={<>
+      <PageHeader title="OpenAS2 · EDI" description={`Live AS2 gateway log · ${lineCount} in the last ${WINDOWS[win][1]}`} actions={<>
         <button type="button" aria-pressed={auto} onClick={() => { setAuto((v) => !v); setSec(REFRESH_SECONDS); }}
           className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-[8px] border border-solid px-3 text-[13px] font-medium text-foreground"
           style={{ borderColor: auto ? "color-mix(in oklab, var(--success) 40%, transparent)" : "var(--border)", background: auto ? tint("var(--success)", 10) : "var(--card)" }}>
@@ -65,12 +71,13 @@ export default function OpenAs2() {
         }}><Copy size={14} className="block" />Copy</Button>
       </>} />
       {error && <ErrorNote message={error} onRetry={reload} />}
-      <Card className="grid overflow-hidden grid-cols-[repeat(var(--k6,6),minmax(0,1fr))]">
+      <Card className="grid overflow-hidden grid-cols-[repeat(var(--k6,7),minmax(0,1fr))]">
         <LevelButton label="ALL" color="var(--fg-2)" n={entries.length} valueColor="var(--fg)" active={level === "all"} underline="var(--fg)" onClick={() => setLevel("all")} />
         {LEVELS.map(([s, c]) => {
           const n = count(s), on = level === s;
           return <LevelButton key={s} label={s} color={c} n={n} valueColor={n ? c : "var(--fg)"} active={on} tintBg underline={c} onClick={() => setLevel(on ? "all" : s)} />;
         })}
+        <LevelButton label="OTHER" color="var(--muted-fg)" n={others} valueColor="var(--fg)" active={level === "rest"} underline="var(--muted-fg)" onClick={() => setLevel(level === "rest" ? "all" : "rest")} />
       </Card>
       <Card className="overflow-hidden">
         <div className="flex flex-wrap items-center gap-2 border-0 border-b border-solid border-border px-4 py-3.5">
@@ -82,7 +89,7 @@ export default function OpenAs2() {
           <span className="inline-flex h-8 items-center rounded-[8px] border border-solid border-border px-2.5 text-[12.5px] text-fg-2">Limit {LOG_LIMIT}</span>
         </div>
         <div className="flex flex-wrap justify-between gap-3 border-0 border-b border-solid border-border px-4 py-2.5 text-[12px] text-muted-foreground tnum">
-          <span>Showing {num(shown.length)} of {num(entries.length)} lines · newest first</span>
+          <span>Showing {num(shown.length)} of {capped ? `the newest ${num(entries.length)}` : num(entries.length)} lines · newest first · times in IST · addresses, hosts, file paths and ids removed</span>
           <span>{auto ? `Next refresh in ${sec}s` : "Auto-refresh paused"}</span>
         </div>
         <div className="flex max-h-[560px] flex-col overflow-y-auto bg-card-2">
@@ -90,7 +97,7 @@ export default function OpenAs2() {
             const c = colorOf(e.severity), warn = e.severity === "WARN";
             return (
               <div key={`${e.timeMs}-${i}`} className="grid grid-cols-[64px_58px_minmax(0,1fr)] items-baseline gap-3 border-0 border-b border-solid border-border px-4 py-2 font-mono text-[12px] leading-[1.6]" style={{ background: warn ? tint("var(--warning)", 6) : "transparent" }}>
-                <span className="text-muted-foreground tnum">{new Date(e.timeMs).toISOString().slice(11, 19)}</span>
+                <span className="text-muted-foreground tnum">{istTime(new Date(e.timeMs))}</span>
                 <span><span className="inline-flex h-[19px] min-w-[46px] items-center justify-center rounded-[5px] px-1.5 text-[10.5px] font-semibold tracking-[.03em]" style={{ color: c, background: tint(c) }}>{e.severity}</span></span>
                 <span className="break-all" style={{ color: warn ? "var(--warning)" : "var(--fg-2)" }}>{e.message}</span>
               </div>

@@ -2,7 +2,7 @@
 import { X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Sheet, SheetClose, SheetContent, SheetTitle } from "@/components/ui/sheet";
-import { ago, num } from "@/components/natasha/format";
+import { ago, istDateTime, num } from "@/components/natasha/format";
 import { Dot, EmptyState, ErrorNote, Skeleton } from "@/components/natasha/primitives";
 import { useJson } from "@/components/useJson";
 import { KIND_COLOR, KIND_HINT, RANGE_LABEL, type KindResult, type Range, type SampleTarget, type SamplesResp } from "./types";
@@ -31,8 +31,9 @@ function Body({ target, range }: { target: SampleTarget; range: Range }) {
           <div key={i} className="rounded-[10px] border border-solid border-border bg-card-2">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-0 border-b border-solid border-border px-3 py-2 text-[12px]">
               {e.level && <span className="font-semibold" style={{ color: LEVEL_COLOR[e.level] ?? "var(--muted-fg)" }}>{e.level}</span>}
-              <span className="font-mono text-fg-2" title={e.at ? `Ingested ${new Date(e.at).toLocaleString()}` : undefined}>{e.loggedAt ?? (e.at ? new Date(e.at).toLocaleString() : "—")}</span>
-              {e.reingested && <Badge size="xs" tone="var(--warning)" title={`Shipped to ELK ${ago(e.at)}, long after it was logged`}>re-ingested</Badge>}
+              {/* A re-shipped line keeps its original (server clock) time; everything else shows when it arrived, in IST. */}
+              <span className="font-mono text-fg-2" title={e.loggedAt ? `Logged ${e.loggedAt} on the server clock` : undefined}>{e.reingested && e.loggedAt ? `${e.loggedAt} server time` : e.at ? istDateTime(e.at) : e.loggedAt ?? "—"}</span>
+              {e.reingested && <Badge size="xs" tone="var(--warning)" title={`Arrived in the log store ${ago(e.at)}, long after it was logged`}>re-sent</Badge>}
               <span className="ml-auto truncate font-mono text-muted-foreground">{e.service}{e.host ? ` · ${e.host}` : ""}</span>
             </div>
             {e.logger && <div className="truncate px-3 pt-2 font-mono text-[11.5px] text-muted-foreground">{e.logger}</div>}

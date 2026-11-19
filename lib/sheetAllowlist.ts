@@ -1,25 +1,29 @@
 /**
  * Google Sheet-driven repo allowlist.
  *
- * Fetches the "Summary" tab of the "Running Services List - Production" sheet
+ * Fetches the first tab (gid=0) of the "Running Services List - Production" sheet
  * via the gviz CSV endpoint (works with our drive.readonly OAuth token), extracts
- * every `github.com/OWNER/REPO(.git)` URL, and returns the unique set. Cached in
+ * every `github.com/OWNER/REPO(.git)` URL, and returns the unique set. If the first
+ * tab has none, the "Summary" tab is tried as a fallback. Cached in
  * memory for 10 min per process to avoid hitting Google on every /security request.
  *
  * Any failure (no refresh token, Google 5xx, malformed sheet) returns null so the
  * caller can degrade to "show everything" — the allowlist is a filter, not a gate.
  */
 import { promises as fs } from "fs";
+import { ensureSecretsHydrated } from "./db";
 
 const SHEET_ID = "1C-e0rNlL-PRx6gMGyu62RA-oOpOjDBJnnpzhqMQBGAg";
 const TAB_NAME = "Summary";
 const REFRESH_TOKEN_FILE = "/tmp/gdrive-refresh-token.txt";
 const TTL_MS = 10 * 60 * 1000;
+const ERROR_TTL_MS = 60 * 1000;
 
 interface CacheEntry {
   fetchedAt: number;
   repos: Set<string>;
   sourceCount: number;
+  source: string;
   error: string | null;
 }
 let cache: CacheEntry | null = null;
@@ -62,40 +66,36 @@ async function mintAccessToken(refreshToken: string): Promise<string> {
   return j.access_token;
 }
 
-function extractRepos(csv: string): string[] {
-  // Header line has "Github Url" column somewhere. Find its index dynamically.
-  const lines = csv.split(/\r?\n/);
-  if (lines.length === 0) return [];
-  // Simple CSV parse (fields are double-quoted, may contain commas — accept the naive split
-  // because the Github URL column doesn't contain commas or quotes in practice).
-  const parseRow = (line: string): string[] => {
-    const out: string[] = [];
-    let cur = "";
-    let inQ = false;
-    for (let i = 0; i < line.length; i++) {
-      const c = line[i];
-      if (c === '"') {
-        if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
-        else inQ = !inQ;
-      } else if (c === "," && !inQ) { out.push(cur); cur = ""; }
-      else cur += c;
-    }
-    out.push(cur);
-    return out;
-  };
-  const header = parseRow(lines[0]);
-  const idx = header.findIndex((h) => h.toLowerCase().replace(/\s+/g, "") === "githuburl");
-  if (idx < 0) return [];
+/**
+ * Pull every `github.com/OWNER/REPO` out of the CSV, wherever it sits. The sheet's
+ * columns move around and some cells hold more than one line, so a column parser
+ * misses rows; a whole-document scan does not. Repo names may contain dots
+ * ("RW-Domain-2.0-Thym"), so only a trailing ".git" or stray full stop is dropped.
+ */
+export function extractRepos(csv: string): string[] {
   const out: string[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    if (!lines[i].trim()) continue;
-    const cells = parseRow(lines[i]);
-    if (cells.length <= idx) continue;
-    const url = cells[idx].trim();
-    const m = url.match(/github\.com\/([^/]+)\/([^/.\s]+)/i);
-    if (m) out.push(`${m[1]}/${m[2]}`.toLowerCase());
+  const re = /github\.com[/:]([A-Za-z0-9_-][A-Za-z0-9_.-]*)\/([A-Za-z0-9_.-]+)/gi;
+  for (const m of csv.matchAll(re)) {
+    const name = m[2].replace(/\.git$/i, "").replace(/\.+$/, "");
+    if (name) out.push(`${m[1]}/${name}`.toLowerCase());
   }
   return out;
+}
+
+/** Tabs to read, in order. The first one that yields any GitHub URL wins. */
+const TAB_SOURCES: Array<{ label: string; query: string }> = [
+  { label: "Sheet:first tab", query: "gid=0&headers=1" },
+  { label: `Sheet:${TAB_NAME}`, query: `sheet=${encodeURIComponent(TAB_NAME)}` },
+];
+
+async function fetchTabCsv(accessToken: string, query: string): Promise<string> {
+  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&${query}`;
+  const r = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    redirect: "follow",
+  });
+  if (!r.ok) throw new Error(`gviz http ${r.status}`);
+  return r.text();
 }
 
 export interface AllowlistResult {
@@ -109,12 +109,13 @@ export interface AllowlistResult {
 
 export async function getRepoAllowlist(): Promise<AllowlistResult> {
   const now = Date.now();
-  if (cache && now - cache.fetchedAt < TTL_MS) {
+  // A failure is retried after a minute; a good list is kept for the full TTL.
+  if (cache && now - cache.fetchedAt < (cache.error ? ERROR_TTL_MS : TTL_MS)) {
     return {
       // A cached failure must degrade open too, not filter everything out.
       repos: cache.error ? null : cache.repos,
       count: cache.sourceCount,
-      source: `Sheet:Summary (cached · ${Math.round((now - cache.fetchedAt) / 1000)}s old)`,
+      source: `${cache.source} (cached · ${Math.round((now - cache.fetchedAt) / 1000)}s old)`,
       fetchedAt: new Date(cache.fetchedAt).toISOString(),
       error: cache.error,
       cached: true,
@@ -122,25 +123,30 @@ export async function getRepoAllowlist(): Promise<AllowlistResult> {
   }
 
   try {
+    // The Google credentials live in the secret store, which loads asynchronously after start.
+    await ensureSecretsHydrated();
     const refreshToken = await readRefreshToken();
     if (!refreshToken) throw new Error("no gdrive refresh token — visit /api/gdrive/callback once");
     const accessToken = await mintAccessToken(refreshToken);
-    const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(TAB_NAME)}`;
-    const r = await fetch(url, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      redirect: "follow",
-    });
-    if (!r.ok) throw new Error(`gviz http ${r.status}`);
-    const csv = await r.text();
-    const repos = extractRepos(csv);
-    const uniq = new Set(repos);
-    // An empty result means the tab changed shape, not that every repo is excluded.
-    if (uniq.size === 0) throw new Error(`no GitHub URLs found in the "${TAB_NAME}" tab — is the "Github Url" column missing?`);
-    cache ={ fetchedAt: now, repos: uniq, sourceCount: uniq.size, error: null };
+    let uniq = new Set<string>();
+    let source = TAB_SOURCES[0].label;
+    const problems: string[] = [];
+    for (const tab of TAB_SOURCES) {
+      try {
+        const found = new Set(extractRepos(await fetchTabCsv(accessToken, tab.query)));
+        if (found.size > 0) { uniq = found; source = tab.label; break; }
+        problems.push(`${tab.label}: no GitHub URLs`);
+      } catch (e) {
+        problems.push(`${tab.label}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    // An empty result means the sheet changed shape, not that every repo is excluded.
+    if (uniq.size === 0) throw new Error(`no GitHub URLs found in the sheet (${problems.join("; ")})`);
+    cache = { fetchedAt: now, repos: uniq, sourceCount: uniq.size, source, error: null };
     return {
       repos: uniq,
       count: uniq.size,
-      source: "Sheet:Summary",
+      source,
       fetchedAt: new Date(now).toISOString(),
       error: null,
       cached: false,
@@ -148,8 +154,8 @@ export async function getRepoAllowlist(): Promise<AllowlistResult> {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     // Cache the error briefly so we don't hammer Google on every failing call.
-    cache = { fetchedAt: now, repos: new Set(), sourceCount: 0, error: msg };
-    return { repos: null, count: 0, source: "Sheet:Summary", fetchedAt: null, error: msg, cached: false };
+    cache = { fetchedAt: now, repos: new Set(), sourceCount: 0, source: "Sheet", error: msg };
+    return { repos: null, count: 0, source: "Sheet", fetchedAt: null, error: msg, cached: false };
   }
 }
 

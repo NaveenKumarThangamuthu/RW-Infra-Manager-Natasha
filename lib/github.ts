@@ -99,8 +99,12 @@ const SCAN_BRANCH_PRIORITY = ["production", "feat/env/prod"];
  *   2. "feat/env/prod" if it exists
  *   3. fall back to the repo's default_branch
  *
- * Uses HEAD on /repos/{owner}/{repo}/branches/{branch} which is cheap (no body).
- * Returns null if the resolution call fails — caller falls back to default_branch.
+ * Uses GET on /repos/{owner}/{repo}/branches/{branch} and checks the name in
+ * the answer. GitHub redirects a renamed branch to its new name and still
+ * answers 200, so a status check alone accepts a branch that cannot be cloned
+ * ("production" answering as "production-main-us"). A redirected or differently
+ * named answer counts as "branch absent".
+ * If the resolution call fails, the default branch is returned.
  */
 export async function resolveScanBranch(
   token: string,
@@ -113,13 +117,16 @@ export async function resolveScanBranch(
       const res = await fetch(
         `${API_BASE}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/branches/${encodeURIComponent(branch)}`,
         {
-          method: "HEAD",
           headers: buildHeaders(token),
           signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
           cache: "no-store",
         },
       );
-      if (res.status === 200) return branch;
+      if (res.status === 200) {
+        const body = (await res.json().catch(() => null)) as { name?: string } | null;
+        if (!res.redirected && body?.name === branch) return branch;
+        continue; // renamed branch: the old name no longer exists, try the next candidate
+      }
       // 404 → branch absent, try next; anything else → bail to default to avoid wasted retries
       if (res.status !== 404) break;
     } catch {

@@ -8,6 +8,10 @@ import { listOpenAlarms } from "@/lib/cloudwatchAlarms";
 import { esSearch, SPRING_LOG_INDEX, withRetry } from "@/lib/elk";
 import { analyzeAllInstances } from "@/lib/recommendations";
 import { listOhioLambdas } from "@/lib/lambdaOhio";
+import { LOG_LEVEL_RUNTIME, levelFilters } from "./springLogLevel";
+
+/** The level searches run a small script per matching line, so they get more time than the default. */
+const LEVEL_QUERY_TIMEOUT_MS = 15_000;
 
 export interface FetchOutcome<T> { payload: T; via: string | null; fetchMs: number }
 
@@ -60,42 +64,43 @@ export function fetchRecommendations() {
 
 export function fetchSpringLogs() {
   return timed(async () => {
-    const body = {
-      size: 0,
-      query: { bool: { filter: [{ range: { "@timestamp": { gte: "now-1h" } } }] } },
-      aggs: {
-        services: {
-          terms: { field: "dissect.service", size: 60, order: { _count: "desc" } },
-          aggs: {
-            errors: { filter: { match_phrase: { message: "ERROR" } } },
-            warns: { filter: { match_phrase: { message: "WARN" } } },
-            hosts: { terms: { field: "host.name", size: 10 } },
-            latest_error: {
-              filter: { match_phrase: { message: "ERROR" } },
-              aggs: { h: { top_hits: { size: 1, sort: [{ "@timestamp": "desc" }], _source: ["@timestamp", "message", "host.name"] } } },
-            },
-          },
-        },
-      },
-    };
-    const { data, via } = await withRetry(() => esSearch<{
-      aggregations: { services: { buckets: Array<{
-        key: string; doc_count: number;
-        errors: { doc_count: number };
-        warns: { doc_count: number };
-        hosts: { buckets: Array<{ key: string }> };
-        latest_error: { h: { hits: { hits: Array<{ _source: { "@timestamp"?: string; message?: string } }> } } };
-      }> } };
-    }>(SPRING_LOG_INDEX + "*", body));
+    const lastHour = { range: { "@timestamp": { gte: "now-1h" } } };
+    const byService = { terms: { field: "dissect.service", size: 60, order: { _count: "desc" } } };
+    type Buckets<T> = { aggregations: { services: { buckets: Array<{ key: string; doc_count: number } & T> } } };
+    const index = SPRING_LOG_INDEX + "*";
 
-    const services = data.aggregations.services.buckets.map((b) => {
-      const lh = b.latest_error.h.hits.hits[0];
+    // Three searches: all lines, then ERROR and WARN lines by their real log level (see lib/springLogLevel).
+    const all = await withRetry(() => esSearch<Buckets<{ hosts: { buckets: Array<{ key: string }> } }>>(index, {
+      size: 0,
+      query: { bool: { filter: [lastHour] } },
+      aggs: { services: { ...byService, aggs: { hosts: { terms: { field: "host.name", size: 10 } } } } },
+    }));
+    const errors = await withRetry(() => esSearch<Buckets<{ latest: { hits: { hits: Array<{ _source: { "@timestamp"?: string; message?: string } }> } } }>>(index, {
+      size: 0,
+      runtime_mappings: LOG_LEVEL_RUNTIME,
+      query: { bool: { filter: [lastHour, ...levelFilters("ERROR")] } },
+      aggs: { services: { ...byService, aggs: { latest: { top_hits: { size: 1, sort: [{ "@timestamp": "desc" }], _source: ["@timestamp", "message", "host.name"] } } } } },
+    }, { timeoutMs: LEVEL_QUERY_TIMEOUT_MS }));
+    const warns = await withRetry(() => esSearch<Buckets<object>>(index, {
+      size: 0,
+      runtime_mappings: LOG_LEVEL_RUNTIME,
+      query: { bool: { filter: [lastHour, ...levelFilters("WARN")] } },
+      aggs: { services: byService },
+    }, { timeoutMs: LEVEL_QUERY_TIMEOUT_MS }));
+
+    const errorBy = new Map(errors.data.aggregations.services.buckets.map((b) => [b.key, b]));
+    const warnBy = new Map(warns.data.aggregations.services.buckets.map((b) => [b.key, b.doc_count]));
+
+    const services = all.data.aggregations.services.buckets.map((b) => {
+      const err = errorBy.get(b.key);
+      const lh = err?.latest.hits.hits[0];
+      const errorCount = err?.doc_count ?? 0;
       return {
         service: b.key,
         total: b.doc_count,
-        errors: b.errors.doc_count,
-        warns: b.warns.doc_count,
-        errorRate: b.doc_count > 0 ? b.errors.doc_count / b.doc_count : 0,
+        errors: errorCount,
+        warns: warnBy.get(b.key) ?? 0,
+        errorRate: b.doc_count > 0 ? errorCount / b.doc_count : 0,
         hosts: b.hosts.buckets.map((h) => h.key),
         latestError: lh ? { at: lh._source["@timestamp"] ?? null, message: (lh._source.message ?? "").slice(0, 400) } : null,
       };
@@ -104,6 +109,6 @@ export function fetchSpringLogs() {
       (acc, s) => ({ total: acc.total + s.total, errors: acc.errors + s.errors, warns: acc.warns + s.warns }),
       { total: 0, errors: 0, warns: 0 },
     );
-    return { payload: { window: "1h" as const, services, totals }, via };
+    return { payload: { window: "1h" as const, services, totals }, via: all.via };
   });
 }
