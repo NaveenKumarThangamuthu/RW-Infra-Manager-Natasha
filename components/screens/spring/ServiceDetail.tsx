@@ -89,7 +89,7 @@ export function ServiceDetail({ name, hasElk, detail, window, onWindow }: { name
           <span className="pt-0.5 text-warning"><AlertTriangle size={14} className="block" /></span>
           <div className="min-w-0 text-[13px] leading-[1.55]">
             <div className="font-semibold">No application logs matched to this service</div>
-            <div className="mt-0.5 text-fg-2 text-wrap-pretty">Health monitoring reports “{name}”, but the log store has no service with the same name, so error counts are not shown for it. The service may log under a different name or may not be shipping its logs.</div>
+            <div className="mt-0.5 text-fg-2 text-wrap-pretty">No application logs from “{name}” have reached the log store in the last 7 days, under this name or a known alternative, so error counts are not shown for it. The service may not be shipping its logs.</div>
           </div>
         </div>
       )}

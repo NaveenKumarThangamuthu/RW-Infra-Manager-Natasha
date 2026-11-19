@@ -1,3 +1,5 @@
+import { buildServiceLookup } from "@/lib/springLogNames";
+
 export interface SpringServiceHealth {
   serviceName: string; job: string; instance: string; up: boolean; cpu: number | null;
   heapUsedBytes: number | null; heapMaxBytes: number | null; heapPct: number | null;
@@ -13,29 +15,9 @@ export interface LogDetailsResp { ok: boolean; service: string; window: string; 
 export type DetailWindow = "15m" | "1h" | "6h" | "24h";
 export type DetailState = LogDetailsResp | { loading: true } | { error: string };
 
-const norm = (s: string) => s.toLowerCase().replace(/[-_]/g, "");
-const strip = (s: string) => s.replace(/service$/i, "").replace(/svc$/i, "");
-
-/**
- * Prometheus and ELK name the same service differently, so match in two stages:
- * exact, then without the "-service" suffix. There is deliberately no fuzzy or
- * substring stage: it copied one service's counts onto similarly named ones.
- * A service with no match has no log figures.
- */
+/** Health-monitoring name → log-store entry. The matching rule lives in lib/springLogNames. */
 export function buildLogLookup(services: LogServiceStat[]): (name: string) => LogServiceStat | undefined {
-  const exact = new Map(services.map((s) => [norm(s.service), s]));
-  const stripped = new Map(services.map((s) => [strip(norm(s.service)), s]));
-  return (name) => {
-    const key = norm(name);
-    const hit = exact.get(key);
-    if (hit) return hit;
-    const short = strip(key);
-    if (short !== key) {
-      const s = stripped.get(short);
-      if (s) return s;
-    }
-    return undefined;
-  };
+  return buildServiceLookup(services);
 }
 
 export interface LogBucket { key: string; count: number; sample: LogEntry; hosts: string[]; lastAt: string | null }

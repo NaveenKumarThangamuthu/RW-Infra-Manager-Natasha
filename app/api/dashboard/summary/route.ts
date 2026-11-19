@@ -7,6 +7,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { inScopeRepos } from "@/lib/findingScope";
+import { buildServiceLookup } from "@/lib/springLogNames";
 import { readLatest, ALL_SOURCES } from "@/lib/dataSnapshot";
 
 export const dynamic = "force-dynamic";
@@ -28,23 +29,10 @@ interface RecsPayload {
 const FINDING_WINDOW_DAYS = 2;
 const DAY_MS = 86_400_000;
 
-/**
- * Monitored services whose own logs show errors. This mirrors `buildLogLookup` in
- * `components/screens/spring/data.ts` (exact name, then without the "service" suffix, never a
- * partial match) so Home and the Spring page report the same number. Keep the two in step.
- */
-const normName = (s: string) => s.toLowerCase().replace(/[-_]/g, "");
-const stripSuffix = (s: string) => s.replace(/service$/i, "").replace(/svc$/i, "");
-
+/** Monitored services whose own logs show errors, matched by the same rule as the Spring page (lib/springLogNames). */
 function countErroring(health: SpringHealth["services"], logs: SpringLogs["services"]): number {
-  const exact = new Map(logs.map((l) => [normName(l.service), l.errors]));
-  const stripped = new Map(logs.map((l) => [stripSuffix(normName(l.service)), l.errors]));
-  return health.filter((h) => {
-    const key = normName(h.serviceName ?? "");
-    const short = stripSuffix(key);
-    const errors = exact.get(key) ?? (short !== key ? stripped.get(short) : undefined) ?? 0;
-    return errors > 0;
-  }).length;
+  const lookup = buildServiceLookup(logs);
+  return health.filter((h) => (lookup(h.serviceName ?? "")?.errors ?? 0) > 0).length;
 }
 
 export async function GET() {
