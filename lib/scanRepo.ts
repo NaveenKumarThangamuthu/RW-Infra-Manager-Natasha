@@ -18,6 +18,9 @@ import { prisma } from "./db";
 import { readToken } from "./githubVault";
 import { runAll, type RawFinding } from "./scanners";
 
+/** Marks findings the scanner closed itself, as opposed to ones a person accepted. */
+export const RESOLVED_BY = "scanner";
+
 // Large monorepos need more than two minutes to clone on a slow link; a kill
 // mid-transfer surfaces as "fatal: early EOF". Override with NATASHA_CLONE_TIMEOUT_MS.
 const CLONE_TIMEOUT_MS = Number(process.env.NATASHA_CLONE_TIMEOUT_MS) || 120_000;
@@ -128,6 +131,26 @@ export async function scanRepo(opts: {
     const BATCH = 20;
     for (let i = 0; i < upserts.length; i += BATCH) {
       await Promise.all(upserts.slice(i, i + BATCH));
+    }
+
+    // Keep "open" honest. A finding this scan reported again is open, even if an earlier scan had closed it.
+    // A finding the scan no longer reports is closed, but only for scanners that ran cleanly, so a scanner
+    // that crashed never makes its findings look fixed.
+    const scanStart = new Date(t0);
+    await prisma.finding.updateMany({
+      where: { repoFullName, lastSeenAt: { gte: scanStart }, suppressedBy: RESOLVED_BY },
+      data: { suppressedAt: null, suppressedBy: null, suppressedReason: null },
+    });
+    const cleanScanners = results.filter((r) => r.ok).map((r) => r.scanner);
+    if (cleanScanners.length > 0) {
+      await prisma.finding.updateMany({
+        where: { repoFullName, branch: opts.branch, scanner: { in: cleanScanners }, suppressedAt: null, lastSeenAt: { lt: scanStart } },
+        data: {
+          suppressedAt: now,
+          suppressedBy: RESOLVED_BY,
+          suppressedReason: `Resolved: not reported by the scan of ${now.toISOString().slice(0, 10)}${commitSha ? ` (commit ${commitSha.slice(0, 7)})` : ""}`,
+        },
+      });
     }
 
     const bySeverity: Record<string, number> = {};
