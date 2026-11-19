@@ -115,7 +115,7 @@ function Inner() {
       {actions.bulk?.current && <Banner tone="var(--info)">Scanning {actions.bulk.current}… Keep this tab open until the scan finishes.</Banner>}
       {data.allowlist?.error && <Banner tone="var(--warning)">Scope list unavailable, showing every repository.</Banner>}
       {data.allowlist && !data.allowlist.error && !!data.excludedByAllowlist && (
-        <Banner tone="var(--info)">Limited to the {num(data.allowlist.count)} repositories on the running services list. {num(data.excludedByAllowlist)} others are hidden.</Banner>
+        <Banner tone="var(--info)">Limited to the {num(data.repos.length)} repositories on the running services list. {num(data.excludedByAllowlist)} others are hidden.</Banner>
       )}
       <KpiGrid>
         <Kpi label="Repositories" value={num(repos.length)} footer={archived ? `${num(archived)} archived ${showArchived ? "included" : "not shown"}` : "Active repositories in scope"} />

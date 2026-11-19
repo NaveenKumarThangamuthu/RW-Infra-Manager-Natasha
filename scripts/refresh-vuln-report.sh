@@ -193,8 +193,9 @@ meta = {
         {"repo": r["repo"], "branch": r.get("branch") or "", "status": "skipped" if r in skipped else "failed", "reason": reason(r)}
         for r in failed + skipped
     ],
-    # On the in-scope list but not scanned: no longer listed by GitHub under that name, or archived.
-    "notOnGithub": (allow.get("notInDb") or []) + (allow.get("archivedInDb") or []),
+    # Names on the in-scope list that GitHub no longer has (deleted, renamed or archived) are left out
+    # of the report: they are not repositories any more. They are still named in logs/rescan-all.log.
+    "notOnGithub": [],
     "allowlistEntries": allow.get("entries"),
 }
 with open(meta_path, "w") as fh:
