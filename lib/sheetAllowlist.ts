@@ -18,6 +18,8 @@ const TAB_NAME = "Summary";
 const REFRESH_TOKEN_FILE = "/tmp/gdrive-refresh-token.txt";
 const TTL_MS = 10 * 60 * 1000;
 const ERROR_TTL_MS = 60 * 1000;
+/** In scope although not on the sheet: this dashboard's own repository, at the owner's request. Lowercase "owner/name". */
+const ALWAYS_IN_SCOPE = ["naveenkumarthangamuthu/rw-infra-manager-natasha"];
 
 interface CacheEntry {
   fetchedAt: number;
@@ -142,6 +144,7 @@ export async function getRepoAllowlist(): Promise<AllowlistResult> {
     }
     // An empty result means the sheet changed shape, not that every repo is excluded.
     if (uniq.size === 0) throw new Error(`no GitHub URLs found in the sheet (${problems.join("; ")})`);
+    for (const extra of ALWAYS_IN_SCOPE) uniq.add(extra);
     cache = { fetchedAt: now, repos: uniq, sourceCount: uniq.size, source, error: null };
     return {
       repos: uniq,

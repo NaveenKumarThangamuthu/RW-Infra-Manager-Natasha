@@ -196,6 +196,8 @@ meta = {
     # Names on the in-scope list that GitHub no longer has (deleted, renamed or archived) are left out
     # of the report: they are not repositories any more. They are still named in logs/rescan-all.log.
     "notOnGithub": [],
+    # Every repository scanned successfully, so the report can name the ones with no findings.
+    "scannedRepos": sorted(r["repo"] for r in ok),
     "allowlistEntries": allow.get("entries"),
 }
 with open(meta_path, "w") as fh:

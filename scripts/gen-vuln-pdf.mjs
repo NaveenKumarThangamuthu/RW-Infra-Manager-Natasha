@@ -76,6 +76,7 @@ const distinctCves = new Set(rows.filter((r) => r.cat === "CVE").map((r) => r.ru
 const meta = process.env.VULN_REPORT_META ? JSON.parse(process.env.VULN_REPORT_META) : null;
 const notScanned = meta && Array.isArray(meta.notScanned) ? meta.notScanned : [];
 const notOnGithub = meta && Array.isArray(meta.notOnGithub) ? meta.notOnGithub : [];
+const scannedRepos = meta && Array.isArray(meta.scannedRepos) ? meta.scannedRepos : [];
 const scanDate = [...new Set(rows.map((r) => r.seen))].sort().pop() || "unknown";
 const scanDay = fmtDate((meta && meta.date) || scanDate);
 const generated = new Date().toLocaleString("en-GB", {
@@ -84,6 +85,9 @@ const generated = new Date().toLocaleString("en-GB", {
 
 // Per-repo rollup: Spring block first, then Mule; ranked by Critical inside each.
 const repoNames = [...new Set(rows.map((r) => r.repo))];
+/** Scanned repositories that have no row in this report. */
+const withFindings = new Set(repoNames.map((n) => n.toLowerCase()));
+const cleanRepos = () => scannedRepos.filter((n) => !withFindings.has(String(n).toLowerCase()));
 const repoRollup = repoNames
   .map((repo) => {
     const rs = rows.filter((r) => r.repo === repo);
@@ -426,6 +430,18 @@ ${repoRollup
 </div>`,
   )
   .join("\n")}
+
+${
+  cleanRepos().length
+    ? `<section>
+  <h2>Repositories with no vulnerabilities (${fmt(cleanRepos().length)})</h2>
+  <p class="lede">Scanned in this run with no known vulnerability reported.</p>
+  <table><thead><tr><th>Repository</th><th>Result</th></tr></thead><tbody>
+    ${cleanRepos().map((n) => `<tr><td class="mono wrap">${esc(n)}</td><td>0 findings</td></tr>`).join("\n")}
+  </tbody></table>
+</section>`
+    : ""
+}
 
 ${
   notScanned.length || notOnGithub.length
